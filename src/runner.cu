@@ -160,7 +160,7 @@ void run_sgemm_dmalt_naive(int M, int N, int K, float alpha, float *A,
                            float *B, float beta, float *C) {
   dim3 gridDim(CEIL_DIV(M, 32), CEIL_DIV(N, 32));
   dim3 blockDim(32, 32);
-  sgemm_dmalt_naive<<<gridDim, blockDim>>>(M, N, K, alpha, A, B, beta, C);
+  sgemm_naive_dmalt<<<gridDim, blockDim>>>(M, N, K, alpha, A, B, beta, C);
 
 }
 
@@ -552,7 +552,7 @@ void run_kernel(int kernel_num, int M, int N, int K, float alpha, float *A,
     runSgemmDoubleBuffering2(M, N, K, alpha, A, B, beta, C);
     break;
   case 21:
-    run_sgemm_dmalt_naive(M, N, K, alpha, A, B, beta, C);
+    run_sgemm_naive_dmalt(M, N, K, alpha, A, B, beta, C);
     break;
   default:
     throw std::invalid_argument("Unknown kernel number");
