@@ -121,5 +121,5 @@ __global__ void sgemm_shared_mem_block_dmalt(int M, int N, int K, float alpha,
     __syncthreads();
 
   }
-  C[tRow * BLOCKSIZE + tCol] = alpha * acc + C[tRow * BLOCKSIZE + tCol] * beta;
+  C[tRow * BLOCKSIZE + tCol] = alpha * acc + C[tRow * N + tCol] * beta;
 }
