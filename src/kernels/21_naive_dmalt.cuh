@@ -99,8 +99,8 @@ __global__ void sgemm_shared_mem_block_dmalt(int M, int N, int K, float alpha,
   const uint bkRow = blockIdx.x;
   const uint bkCol = blockIdx.y;
 
-  const uint tRow = threadIdx.y;
-  const uint tCol = threadIdx.x;
+  const uint tCol = threadIdx.x % BLOCKSIZE;
+  const uint tRow = threadIdx.x / BLOCKSIZE;
 
   A += bkRow * BLOCKSIZE * K;
   B += bkCol * BLOCKSIZE;
