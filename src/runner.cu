@@ -216,7 +216,7 @@ void run_sgemm_shared_mem_block_dmalt(int M, int N, int K, float alpha, float *A
   // L1 cache becomes useless, since we access GMEM only via SMEM, so we carve
   // out all of L1 to SMEM. This doesn't currently make a difference, since
   // occupancy is limited by reg and thread count, but it's good to do anyway.
-  cudaFuncSetAttribute(sgemm_shared_mem_block<32>,
+  cudaFuncSetAttribute(sgemm_shared_mem_block_dmalt<32>,
                        cudaFuncAttributePreferredSharedMemoryCarveout,
                        cudaSharedmemCarveoutMaxShared);
   sgemm_shared_mem_block_dmalt<32>
