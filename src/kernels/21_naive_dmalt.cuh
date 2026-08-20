@@ -18,11 +18,9 @@ __global__ void sgemm_naive_dmalt(int M, int N, int K, float alpha, const float 
 
 __global__ void sgemm_coalesce_indswap_dmalt(int M, int N, int K, float alpha, const float *A, 
     const float *B, float beta, float *C) {
-  // Assuming C is 9x9 with 3x3 blocks, i.e. a 3x3 grid.
-  // blockIdx.x -> tile COLUMN, threadIdx.x -> column within the tile.
-  // Numbers below are DISPATCH order (blockIdx.x varies fastest, then
-  // threadIdx.x within a block); blocks then run concurrently.
-  // Consecutive blocks sweep ACROSS a band of rows.
+  // Let's say that C is 9 x 9 matrix and the block size is 3x3.
+  // The following mapping would translate to the following dispatch order
+  // of computation of the elements of C:
   // 01 02 03 10 11 12 19 20 21
   // 04 05 06 13 14 15 22 23 24
   // 07 08 09 16 17 18 25 26 27
@@ -73,3 +71,20 @@ __global__ void sgemm_coalesce_dmalt(int M, int N, int K, float alpha, const flo
   }
 
 }
+
+__global__ void sgemm_coalesce_gridswap_dmalt(int M, int N, int K, float alpha, const float *A, 
+    const float *B, float beta, float *C) {
+  // Dispatch order is the same as for sgemm_coalesce_dmalt
+  const uint cCol = blockIdx.y * blockDim.x + threadIdx.x;
+  const uint cRow = blockIdx.x * blockDim.y + threadIdx.y;
+
+  if (cRow < M && cCol < N) {
+    float acc = 0.0;
+    for (int i = 0; i < K; i++) {
+      acc += A[cRow * K + i] * B[i * N + cCol];
+    }
+    C[cRow * N + cCol] = alpha * acc + beta * C[cRow * N + cCol];
+  }
+
+}
+

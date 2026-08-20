@@ -166,12 +166,19 @@ void run_sgemm_naive_dmalt(int M, int N, int K, float alpha, float *A,
 
 void run_sgemm_coalesce_indswap_dmalt(int M, int N, int K, float alpha, float *A,
                            float *B, float beta, float *C) {
-  dim3 gridDim(CEIL_DIV(M, 32), CEIL_DIV(N, 32));
+  dim3 gridDim(CEIL_DIV(N, 32), CEIL_DIV(M, 32));  // N and M are swapped on purpose
   dim3 blockDim(32, 32);
   sgemm_coalesce_indswap_dmalt<<<gridDim, blockDim>>>(M, N, K, alpha, A, B, beta, C);
 
 }
 
+void run_sgemm_coalesce_gridswap_dmalt(int M, int N, int K, float alpha, float *A,
+                           float *B, float beta, float *C) {
+  dim3 gridDim(CEIL_DIV(M, 32), CEIL_DIV(N, 32));  // N and M are swapped on purpose
+  dim3 blockDim(32, 32);
+  sgemm_coalesce_gridswap_dmalt<<<gridDim, blockDim>>>(M, N, K, alpha, A, B, beta, C);
+
+}
 void run_sgemm_coalesce(int M, int N, int K, float alpha, float *A, float *B,
                         float beta, float *C) {
   dim3 gridDim(CEIL_DIV(M, 32), CEIL_DIV(N, 32));
@@ -575,6 +582,9 @@ void run_kernel(int kernel_num, int M, int N, int K, float alpha, float *A,
     break;
   case 23:
     run_sgemm_coalesce_dmalt(M, N, K, alpha, A, B, beta, C);
+    break;
+  case 24:
+    run_sgemm_coalesce_gridswap_dmalt(M, N, K, alpha, A, B, beta, C);
     break;
   default:
     throw std::invalid_argument("Unknown kernel number");
