@@ -88,3 +88,38 @@ __global__ void sgemm_coalesce_gridswap_dmalt(int M, int N, int K, float alpha, 
 
 }
 
+
+template <const uint BLOCKSIZE>
+__global__ void sgemm_shared_mem_block_dmalt(int M, int N, int K, float alpha,
+    const float *A, const float *B, float beta, float *C) {
+
+  __shared__ float As[BLOCKSIZE * BLOCKSIZE];
+  __shared__ float Bs[BLOCKSIZE * BLOCKSIZE];
+
+  const uint bkRow = blockIdx.x;
+  const uint bkCol = blockIdx.y;
+
+  const uint tRow = threadIdx.y;
+  const uint tCol = threadIdx.x;
+
+  A += bkRow * BLOCKSIZE * K;
+  B += bkCol * BLOCKSIZE;
+  C += BLOCKSIZE * (bkRow * N + bkCol);
+
+  float acc = 0.0;
+  for (int bkIdx = 0; bkIdx < K; bkIdx += BLOCKSIZE) {
+    As[tRow * BLOCKSIZE + tCol] = A[tRow * BLOCKSIZE + tCol];
+    Bs[tRow * BLOCKSIZE + tCol] = B[tRow * BLOCKSIZE + tCol];
+    __syncthreads();
+
+    A += BLOCKSIZE;
+    B += BLOCKSIZE * N;
+
+    for (int i = 0; i < BLOCKSIZE; i++) {
+      acc += As[tRow * BLOCKSIZE + i] * B[i * BLOCKSIZE + tCol];
+    }
+    __syncthreads();
+
+  }
+  C[tRow * BLOCKSIZE + tCol] = alpha * tmp + C[tRow * BLOCKSIZE + tCol] * beta;
+}
