@@ -116,7 +116,7 @@ __global__ void sgemm_shared_mem_block_dmalt(int M, int N, int K, float alpha,
     B += BLOCKSIZE * N;
 
     for (int i = 0; i < BLOCKSIZE; i++) {
-      acc += As[tRow * BLOCKSIZE + i] * B[i * BLOCKSIZE + tCol];
+      acc += As[tRow * BLOCKSIZE + i] * Bs[i * BLOCKSIZE + tCol];
     }
     __syncthreads();
 
