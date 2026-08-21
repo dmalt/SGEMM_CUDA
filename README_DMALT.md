@@ -297,6 +297,7 @@ Average elapsed time: (0.257308) s, performance: (  534.1) GFLOPS. size: (4096).
 | sgemm_naive_dmalt            | 61.4        | 49.45    | 0.93    | 99.9  | 1.17  | 6.05       | 2.98     | 49.95    | 13.85  | 97.32 | 92.61 | 6.05           |
 | sgemm_coalesce_indswap_dmalt | 447.1       | 77.68    | 8.84    | 77.79 | 4.18  | 77.68      | 28.25    | 38.84    | 77.68  | 94.98 | 49.56 | 77.68          |
 | sgemm_coalesce_dmalt         | 495.2       | 79.78    | 12.05   | 79.87 | 4.30  | 79.78      | 38.51    | 39.89    | 79.78  | 94.98 | 73.25 | 79.78          |
+| sgemm_shared_mem_block_dmalt | 866.3       | 76.23    | 12.90   | 90.41 | 5.97  | 76.23      | 41.24    | 45.21    | 76.23  | 0.39  | 47.36 | 76.23          |
 
 ## Notes
 
@@ -306,3 +307,13 @@ Average elapsed time: (0.257308) s, performance: (  534.1) GFLOPS. size: (4096).
 - They differ only in DRAM bytes per L2 miss (48.8 vs 122.5)
 - Neither difference reaches performance: both are load-issue bound at ~79%, and across
   six paired runs the throughput gap is 2.5%, inside run-to-run variance
+
+`sgemm_shared_mem_block_dmalt`
+
+Tiling was supposed to reduce the number of the DRAM accesses from 4096**3 *2
+to 32* 4096 *2* (4096 / 32)** 2 = 4096 \** 3 *2 / 32, so x32. However, we
+don't see it from the metrics. Mem TP 2 (Memory Throughput from the Memory
+Workload Analysis table) shows 41.24 GB/s* 331 ms = 13.65 GB of DRAM vs 38.51
+GB/s * 460 ms = 17.71 GB for the coalescing kernel, so the DRAM traffic is
+indeed reduced, but not 32-fold -- only by 23%. The suspected reason that L1
+cache absorbs the hit in the coalescing kernel.
