@@ -222,6 +222,74 @@ Average elapsed time: (0.403874) s, performance: (  340.3) GFLOPS. size: (4096).
     ----------------- ----------- ------------
 ```
 
+## Tiling
+
+```sh
+Running kernel 25 on device 0.
+Max size: 4096
+dimensions(m=n=k) 128, alpha: 0.5, beta: 3
+Average elapsed time: (0.000026) s, performance: (  162.9) GFLOPS. size: (128).
+dimensions(m=n=k) 256, alpha: 0.5, beta: 3
+Average elapsed time: (0.000106) s, performance: (  315.5) GFLOPS. size: (256).
+dimensions(m=n=k) 512, alpha: 0.5, beta: 3
+Average elapsed time: (0.000703) s, performance: (  381.6) GFLOPS. size: (512).
+dimensions(m=n=k) 1024, alpha: 0.5, beta: 3
+Average elapsed time: (0.003994) s, performance: (  537.7) GFLOPS. size: (1024).
+dimensions(m=n=k) 2048, alpha: 0.5, beta: 3
+Average elapsed time: (0.019648) s, performance: (  874.4) GFLOPS. size: (2048).
+dimensions(m=n=k) 4096, alpha: 0.5, beta: 3
+Average elapsed time: (0.158643) s, performance: (  866.3) GFLOPS. size: (4096).
+==PROF== Connected to process 7586 (/content/sgemm/build/sgemm)
+Running kernel 25 on device 0.
+Max size: 4096
+dimensions(m=n=k) 128, alpha: 0.5, beta: 3
+Average elapsed time: (0.000470) s, performance: (    8.9) GFLOPS. size: (128).
+dimensions(m=n=k) 256, alpha: 0.5, beta: 3
+Average elapsed time: (0.000405) s, performance: (   82.9) GFLOPS. size: (256).
+dimensions(m=n=k) 512, alpha: 0.5, beta: 3
+Average elapsed time: (0.000712) s, performance: (  377.2) GFLOPS. size: (512).
+dimensions(m=n=k) 1024, alpha: 0.5, beta: 3
+Average elapsed time: (0.003883) s, performance: (  553.0) GFLOPS. size: (1024).
+dimensions(m=n=k) 2048, alpha: 0.5, beta: 3
+Average elapsed time: (0.019745) s, performance: (  870.1) GFLOPS. size: (2048).
+dimensions(m=n=k) 4096, alpha: 0.5, beta: 3
+==PROF== Profiling "sgemm_shared_mem_block_dmalt": 0%....50%....100% - 8 passes
+Average elapsed time: (0.257308) s, performance: (  534.1) GFLOPS. size: (4096).
+==PROF== Disconnected from process 7586
+[7586] sgemm@127.0.0.1
+  void sgemm_shared_mem_block_dmalt<32>(int, int, int, float, const float *, const float *, float, float *) (128, 128, 1)x(1024, 1, 1), Context 1, Stream 7, Device 0, CC 7.5
+    Section: GPU Speed Of Light Throughput
+    ----------------------- ----------- --------------
+    Metric Name             Metric Unit   Metric Value
+    ----------------------- ----------- --------------
+    DRAM Frequency                  Ghz           5.00
+    SM Frequency                    Mhz         585.00
+    Elapsed Cycles                cycle    193,749,779
+    Memory Throughput                 %          76.23
+    DRAM Throughput                   %          12.90
+    Duration                         ms         331.20
+    L1/TEX Cache Throughput           %          90.41
+    L2 Cache Throughput               %           5.97
+    SM Active Cycles              cycle 193,488,364.88
+    Compute (SM) Throughput           %          76.23
+    ----------------------- ----------- --------------
+
+    INF   Compute and Memory are well-balanced: To reduce runtime, both computation and memory traffic must be reduced.
+          Check both the Compute Workload Analysis and Memory Workload Analysis sections.
+
+    Section: Memory Workload Analysis
+    ----------------- ----------- ------------
+    Metric Name       Metric Unit Metric Value
+    ----------------- ----------- ------------
+    Memory Throughput     Gbyte/s        41.24
+    Mem Busy                    %        45.21
+    Max Bandwidth               %        76.23
+    L1/TEX Hit Rate             %         0.39
+    L2 Hit Rate                 %        47.36
+    Mem Pipes Busy              %        76.23
+    ----------------- ----------- ------------
+```
+
 ## Comparison
 
 | Kernel name                  | 4096 GFLOPS | Mem TP 1 | DRAM TP | L1 TP | L2 TP | Compute TP | Mem TP 2 | Mem Busy | Max BW | L1 HR | L2 HR | Mem Pipes Busy |
@@ -232,16 +300,9 @@ Average elapsed time: (0.403874) s, performance: (  340.3) GFLOPS. size: (4096).
 
 ## Notes
 
-For the coalescing kernel I wanted to see whether simply swapping x and y in
-the element accesses would suffice, hence `sgemm_coalesce_indswap_dmalt`. Both
-kernels achieve the coalescing gain over the naive version, and their L1 hit
-rates are identical at 94.98% — confirming the access pattern within a warp is
-the same. They differ only in dispatch order: within a block both sweep C
-horizontally, but Boehm's scheme sweeps blocks vertically while mine sweeps
-them horizontally.
+`sgemm_coalesce_indswap_dmalt` vs `sgemm_coalesce_dmalt` shenanigan:
 
-Mine is slower (447 vs 495 GFLOPS at 4096) and the L2 hit rate shows why: 49.6%
-against 73.3%. Moving to the next block, my scheme needs a new set of B columns
-— expensive, since B is accessed non-contiguously — while caching rows of A,
-which are cheap to load anyway. Boehm's needs new rows of A and reuses the
-expensive cached columns of B.
+- Both kernels are byte-for-byte identical at L1 and L2 request level
+- They differ only in DRAM bytes per L2 miss (48.8 vs 122.5)
+- Neither difference reaches performance: both are load-issue bound at ~79%, and across
+  six paired runs the throughput gap is 2.5%, inside run-to-run variance
