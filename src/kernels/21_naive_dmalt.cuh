@@ -133,8 +133,8 @@ __global__ void sgemm1DBlocktilingDmalt(int M, int N, int K, float alpha,
 
   float threadResults[TM] = {0.0};
 
-  const uint bkRow = blockIdx.x;
-  const uint bkCol = blockIdx.y;
+  const uint bkRow = blockIdx.y;
+  const uint bkCol = blockIdx.x;
 
   const uint tCol = threadIdx.x % BN;
   const uint tRow = threadIdx.x / BN;
