@@ -145,7 +145,7 @@ __global__ void sgemm1DBlocktilingDmalt(int M, int N, int K, float alpha,
   const uint innerRowB = threadIdx.x / BN;
 
   A += bkRow * K * BM;
-  B += bkCol * BK;
+  B += bkCol * BN;
   C += bkRow * N * BM + bkCol * BN;
 
 
@@ -159,17 +159,17 @@ __global__ void sgemm1DBlocktilingDmalt(int M, int N, int K, float alpha,
 
     for (int iDot = 0; iDot < BK; ++iDot) {
       float tmp = Bs[iDot * BN + tCol];
-      for (int iResIdx = 0; iResIdx < TM; ++iResIdx) {
-        threadResults[iResIdx] += As[(tRow * TM + iResIdx) * BK + iDot] * tmp;
+      for (int iRes = 0; iRes < TM; ++iRes) {
+        threadResults[iRes] += As[(tRow * TM + iRes) * BK + iDot] * tmp;
       }
     }
 
     __syncthreads();
   }
 
-  for (int iResIdx = 0; iResIdx < TM; ++iResIdx) {
-    C[(tRow * TM + iResIdx) * N + tCol] = alpha * threadResults[iResIdx]
-      + beta * C[(tRow * TM + iResIdx) * N + tCol];
+  for (int iRes = 0; iRes < TM; ++iRes) {
+    C[(tRow * TM + iRes) * N + tCol] = alpha * threadResults[iRes]
+      + beta * C[(tRow * TM + iRes) * N + tCol];
   }
 
 }
