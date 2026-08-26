@@ -61,7 +61,7 @@ int main(int argc, char **argv) {
 
   // float alpha = 0.5, beta = 3.0; // GEMM input parameters, C=α*AB+β*C
   // TODO: args below are for debugging - don't forget to remove
-  float alpha = 1.0, beta = 0.0; // GEMM input parameters, C=α*AB+β*C
+  float alpha = 1.0, beta = 1.0; // GEMM input parameters, C=α*AB+β*C
 
   float *A = nullptr, *B = nullptr, *C = nullptr,
         *C_ref = nullptr; // host matrices
