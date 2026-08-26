@@ -164,11 +164,12 @@ __global__ void sgemm1DBlocktilingDmalt(int M, int N, int K, float alpha,
       }
     }
 
-    for (int iResIdx = 0; iResIdx < TM; ++iResIdx) {
-      C[(tRow * TM + iResIdx) * N + tCol] = alpha * threadResults[iResIdx]
-        + beta * C[(tRow * TM + iResIdx) * N + tCol];
-    }
     __syncthreads();
+  }
+
+  for (int iResIdx = 0; iResIdx < TM; ++iResIdx) {
+    C[(tRow * TM + iResIdx) * N + tCol] = alpha * threadResults[iResIdx]
+      + beta * C[(tRow * TM + iResIdx) * N + tCol];
   }
 
 }
