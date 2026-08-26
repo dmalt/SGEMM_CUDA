@@ -151,7 +151,7 @@ __global__ void sgemm1DBlocktilingDmalt(int M, int N, int K, float alpha,
 
   for (int bkIdx = 0; bkIdx < K; bkIdx += BK) {
     As[innerRowA * BM + innerColA] = A[innerRowA * K + innerColA];
-    Bs[innerRowB * BK + innerColB] = B[ineerRowB * N + innerColB];
+    Bs[innerRowB * BK + innerColB] = B[innerRowB * N + innerColB];
   }
 
   __syncthreads();
