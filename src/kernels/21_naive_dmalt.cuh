@@ -99,8 +99,8 @@ __global__ void sgemm_shared_mem_block_dmalt(int M, int N, int K, float alpha,
   const uint bkRow = blockIdx.x;
   const uint bkCol = blockIdx.y;
 
-  const uint tCol = threadIdx.x % BLOCKSIZE;
-  const uint tRow = threadIdx.x / BLOCKSIZE;
+  const uint tCol = threadIdx.x % BLOCKSIZE;  // thread column
+  const uint tRow = threadIdx.x / BLOCKSIZE;  // thread row
 
   A += bkRow * BLOCKSIZE * K;
   B += bkCol * BLOCKSIZE;
@@ -122,4 +122,52 @@ __global__ void sgemm_shared_mem_block_dmalt(int M, int N, int K, float alpha,
 
   }
   C[tRow * N + tCol] = alpha * acc + C[tRow * N + tCol] * beta;
+}
+
+
+template <const uint BM, const uint BN, const uint BK, const uint TM>
+__global__ void sgemm1DBlocktilingDmalt(int M, int N, int K, float alpha,
+    const float *A, const float *B, float beta, float *C) {
+  __shared__ float As[BM * BK];
+  __shared__ float Bs[BK * BN];
+
+  float threadResults[TN] = {0.0};
+
+  const uint bkRow = blockIdx.x;
+  const uint bkCol = blockIdx.y;
+
+  const uint tCol = threadIdx.x % BN;
+  const uint tRow = threadIdx.x / BN;
+
+  const uint innerColA = threadIdx.x % BK;
+  const uint innerRowA = threadIdx.x / BK;
+  const uint innerColB = threadIdx.x % BN;
+  const uint innerRowB = threadIdx.x / BN;
+
+  A += bkRow * K * BM;
+  B += bkCol * BK;
+  C += bkRow * N * BM + bkCol * BN;
+
+
+  for (int bkIdx = 0; bkIdx < K; bkIdx += BK) {
+    As[innerRowA * BM + innerColA] = A[innerRowA * K + innerColA];
+    Bs[innerRowB * BK + innerColB] = B[ineerRowB * N + innerColB];
+  }
+
+  __syncthreads();
+  A += BK;
+  B += BK * N;
+
+  for (int iDot = 0; iDot < K; ++iDot) {
+    tmp = Bs[iDot * BN + tCol];
+    for (int iResIdx = 0; iResIdx < TN; ++iResIdx) {
+      threadResults[iResIdx] += As[(tRow * TN + iResIdx) * BK + iDot] * tmp;
+    }
+  }
+
+  for (int iResIdx = 0; iResIdx < TN; ++iResIdx) {
+    C[(tRow * TN + iResIdx) * M + tCol] = alpha * threadResults[iResIdx]
+      + beta * C[(tRow * TN + iResIdx) * M + tCol];
+  }
+
 }
