@@ -152,22 +152,24 @@ __global__ void sgemm1DBlocktilingDmalt(int M, int N, int K, float alpha,
   for (int bkIdx = 0; bkIdx < K; bkIdx += BK) {
     As[innerRowA * BM + innerColA] = A[innerRowA * K + innerColA];
     Bs[innerRowB * BK + innerColB] = B[innerRowB * N + innerColB];
-  }
 
-  __syncthreads();
-  A += BK;
-  B += BK * N;
+    __syncthreads();
+    A += BK;
+    B += BK * N;
 
-  for (int iDot = 0; iDot < K; ++iDot) {
-    float tmp = Bs[iDot * BN + tCol];
-    for (int iResIdx = 0; iResIdx < TM; ++iResIdx) {
-      threadResults[iResIdx] += As[(tRow * TM + iResIdx) * BK + iDot] * tmp;
+    for (int iDot = 0; iDot < K; ++iDot) {
+      float tmp = Bs[iDot * BN + tCol];
+      for (int iResIdx = 0; iResIdx < TM; ++iResIdx) {
+        threadResults[iResIdx] += As[(tRow * TM + iResIdx) * BK + iDot] * tmp;
+      }
     }
-  }
+    
 
-  for (int iResIdx = 0; iResIdx < TM; ++iResIdx) {
-    C[(tRow * TM + iResIdx) * M + tCol] = alpha * threadResults[iResIdx]
-      + beta * C[(tRow * TM + iResIdx) * M + tCol];
+    for (int iResIdx = 0; iResIdx < TM; ++iResIdx) {
+      C[(tRow * TM + iResIdx) * M + tCol] = alpha * threadResults[iResIdx]
+        + beta * C[(tRow * TM + iResIdx) * M + tCol];
+    }
+    __syncthreads();
   }
 
 }
