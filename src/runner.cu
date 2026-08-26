@@ -59,9 +59,8 @@ void randomize_matrix(float *mat, int N) {
   srand(time.tv_usec);
   for (int i = 0; i < N; i++) {
     float tmp = (float)(rand() % 5) + 0.01 * (rand() % 5);
-    // tmp = (rand() % 2 == 0) ? tmp : tmp * (-1.);
-    // mat[i] = tmp;
-    mat[i] = 1;
+    tmp = (rand() % 2 == 0) ? tmp : tmp * (-1.);
+    mat[i] = tmp;
   }
 }
 
