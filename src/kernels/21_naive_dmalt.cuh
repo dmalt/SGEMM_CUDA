@@ -157,7 +157,7 @@ __global__ void sgemm1DBlocktilingDmalt(int M, int N, int K, float alpha,
     A += BK;
     B += BK * N;
 
-    for (int iDot = 0; iDot < K; ++iDot) {
+    for (int iDot = 0; iDot < BK; ++iDot) {
       float tmp = Bs[iDot * BN + tCol];
       for (int iResIdx = 0; iResIdx < TM; ++iResIdx) {
         threadResults[iResIdx] += As[(tRow * TM + iResIdx) * BK + iDot] * tmp;
