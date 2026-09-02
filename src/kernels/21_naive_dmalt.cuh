@@ -173,3 +173,76 @@ __global__ void sgemm1DBlocktilingDmalt(int M, int N, int K, float alpha,
   }
 
 }
+
+template <const uint BM, const uint BN, const uint BK, const uint TM, const uint TN>
+__global__ void sgemm2DBlocktilingDmalt(int M, int N, int K, float alpha,
+    const float *A, const float *B, float beta, float *C) {
+  __shared__ float As[BM * BK];
+  __shared__ float Bs[BK * BN];
+
+  float threadResults[TM * TN] = {0.0};
+  float regTM[TM] = {0.0};
+  float regTN[TN] = {0.0};
+
+  int totalResultsBlocktile = BM * BN;
+  int numThreadsBlocktile = totalResultsBlocktile / (TM * TN);
+
+  const uint k = BN / TN;
+
+  const uint strideA = numThreadsBlocktile / BK;
+  const uint strideB = numThreadsBlocktile / BN;
+
+  const uint bkRow = blockIdx.y;
+  const uint bkCol = blockIdx.x;
+
+  const uint tCol = threadIdx.x % k;
+  const uint tRow = threadIdx.x / k;
+
+  const uint innerColA = threadIdx.x % BK;
+  const uint innerRowA = threadIdx.x / BK;
+  const uint innerColB = threadIdx.x % BN;
+  const uint innerRowB = threadIdx.x / BN;
+
+  A += bkRow * K * BM;
+  B += bkCol * BN;
+  C += bkRow * N * BM + bkCol * BN;
+
+
+  for (int bkIdx = 0; bkIdx < K; bkIdx += BK) {
+    for (int load_offset = 0; load_offset < BM; load_offset += strideA) {
+      As[(innerRowA + load_offset) * BK + innerColA] = A[(innerRowA + load_offset) * K + innerColA];
+    }
+    for (int load_offset = 0; load_offset < BK, load_offset += strideB) {
+      Bs[(innerRowB + load_offset) * BN + innerColB] = B[(innerRowB + load_offset) * N + innerColB];
+    }
+
+    __syncthreads();
+    A += BK;
+    B += BK * N;
+
+    for (int iDot = 0; iDot < BK; ++iDot) {
+      for (int iTM = 0; iTM < TM; ++iTM) {
+        regTM[iTM] = As[(iTM + tRow * TM) * self.BK + iDot];
+      }
+      for (int iTN = 0; iTN < TN; ++iTN) {
+        regTN[iTN] = Bs[iDot * self.BN + iTN + tCol * self.TN];
+      }
+
+      for (int iTM = 0; iTM < TM; ++iTM) {
+        for (int iTN = 0; iTN < TN; ++iTN) {
+          threadResults[iTM * self.TN + iTN] += regTM[iTM] * regTN[iTN];
+        }
+      }
+    }
+
+    __syncthreads();
+  }
+  unit index;
+  for (int iTM = 0; iTM < TM; ++iTM) {
+    for (int iTN = 0; iTN < TN; ++iTN) {
+      index = (tRow * TM + iTM) * N + tCol * TN + iTN;
+      C[index] = alpha * threadResults[iTM * TN + iTN] + beta * C[index];
+    }
+  }
+
+}
