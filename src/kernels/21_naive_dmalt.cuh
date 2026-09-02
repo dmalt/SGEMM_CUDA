@@ -289,7 +289,7 @@ __global__ void sgemmVectorizeDmalt(int M, int N, int K, float alpha,
     As[(innerColA * 4 + 3) * BM + innerRowA] = tmp.w;
 
     reinterpret_cast<float4 *>(&Bs[innerRowB * BN + innerColB * 4])[0] = 
-        reinterpret_cast<float4 *>(&B[innerRowB * N + innerCOlB * 4])[0];
+        reinterpret_cast<float4 *>(&B[innerRowB * N + innerColB * 4])[0];
     __syncthreads();
 
     A += BK;
