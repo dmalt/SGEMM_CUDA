@@ -237,7 +237,7 @@ __global__ void sgemm2DBlocktilingDmalt(int M, int N, int K, float alpha,
 
     __syncthreads();
   }
-  unit index;
+  uint index;
   for (int iTM = 0; iTM < TM; ++iTM) {
     for (int iTN = 0; iTN < TN; ++iTN) {
       index = (tRow * TM + iTM) * N + tCol * TN + iTN;
