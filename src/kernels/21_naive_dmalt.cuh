@@ -297,7 +297,7 @@ __global__ void sgemmVectorizeDmalt(int M, int N, int K, float alpha,
 
     for (int iDot = 0; iDot < BK; ++iDot) {
       for (int iTM = 0; iTM < TM; ++iTM) {
-        regTM[iTM] = As[(iTM + tRow * TM) * BK + iDot];
+        regTM[iTM] = As[iDot * BM + tRow * TM + iTM];
       }
       for (int iTN = 0; iTN < TN; ++iTN) {
         regTN[iTN] = Bs[iDot * BN + iTN + tCol * TN];
