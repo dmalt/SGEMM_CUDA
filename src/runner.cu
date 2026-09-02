@@ -281,7 +281,7 @@ void runSgemm2DBlocktilingDmalt(int M, int N, int K, float alpha, float *A, floa
     const uint BN = 128;
     dim3 gridDim(CEIL_DIV(N, BN), CEIL_DIV(M, BM));
     dim3 blockDim((BM * BN) / (TM * TN));
-    sgemm2DBlocktiling<BM, BN, BK, TM, TN>
+    sgemm2DBlocktilingDmalt<BM, BN, BK, TM, TN>
         <<<gridDim, blockDim>>>(M, N, K, alpha, A, B, beta, C);
   } else {
     // this is a hacky solution to the underlying problem
@@ -329,7 +329,7 @@ void runSgemmVectorizeDmalt(int M, int N, int K, float alpha, float *A, float *B
     const uint BN = 128;
     dim3 gridDim(CEIL_DIV(N, BN), CEIL_DIV(M, BM));
     dim3 blockDim((BM * BN) / (TM * TN));
-    sgemmVectorize<BM, BN, BK, TM, TN>
+    sgemmVectorizeDmalt<BM, BN, BK, TM, TN>
         <<<gridDim, blockDim>>>(M, N, K, alpha, A, B, beta, C);
   } else {
     // this is a hacky solution to the underlying problem
