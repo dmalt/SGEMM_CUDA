@@ -271,7 +271,7 @@ __global__ void sgemmVectorizeDmalt(int M, int N, int K, float alpha,
   const uint tCol = threadIdx.x % k;
   const uint tRow = threadIdx.x / k;
 
-  const uint innerColA = threadIdx.x % (BK / 4;
+  const uint innerColA = threadIdx.x % (BK / 4);
   const uint innerRowA = threadIdx.x / (BK / 4);
   const uint innerColB = threadIdx.x % (BN / 4);
   const uint innerRowB = threadIdx.x / (BN / 4);
