@@ -212,7 +212,7 @@ __global__ void sgemm2DBlocktilingDmalt(int M, int N, int K, float alpha,
     for (int load_offset = 0; load_offset < BM; load_offset += strideA) {
       As[(innerRowA + load_offset) * BK + innerColA] = A[(innerRowA + load_offset) * K + innerColA];
     }
-    for (int load_offset = 0; load_offset < BK, load_offset += strideB) {
+    for (int load_offset = 0; load_offset < BK; load_offset += strideB) {
       Bs[(innerRowB + load_offset) * BN + innerColB] = B[(innerRowB + load_offset) * N + innerColB];
     }
 
