@@ -246,3 +246,83 @@ __global__ void sgemm2DBlocktilingDmalt(int M, int N, int K, float alpha,
   }
 
 }
+
+template <const uint BM, const uint BN, const uint BK, const uint TM, const uint TN>
+__global__ void sgemmVectorizeDmalt(int M, int N, int K, float alpha,
+    const float *A, const float *B, float beta, float *C) {
+  __shared__ float As[BM * BK];
+  __shared__ float Bs[BK * BN];
+
+  float threadResults[TM * TN] = {0.0};
+  float regTM[TM] = {0.0};
+  float regTN[TN] = {0.0};
+
+  int totalResultsBlocktile = BM * BN;
+  int numThreadsBlocktile = totalResultsBlocktile / (TM * TN);
+
+  const uint k = BN / TN;
+
+  const uint strideA = numThreadsBlocktile / BK;
+  const uint strideB = numThreadsBlocktile / BN;
+
+  const uint bkRow = blockIdx.y;
+  const uint bkCol = blockIdx.x;
+
+  const uint tCol = threadIdx.x % k;
+  const uint tRow = threadIdx.x / k;
+
+  const uint innerColA = threadIdx.x % (BK / 4;
+  const uint innerRowA = threadIdx.x / (BK / 4);
+  const uint innerColB = threadIdx.x % (BN / 4);
+  const uint innerRowB = threadIdx.x / (BN / 4);
+
+  A += bkRow * K * BM;
+  B += bkCol * BN;
+  C += bkRow * N * BM + bkCol * BN;
+
+
+  for (int bkIdx = 0; bkIdx < K; bkIdx += BK) {
+    float4 tmp = reinterpret_cast<float4 *>(&A[innerRowA * K + innerColA * 4])[0];
+    As[(innerColA * 4 + 0) * BM + innerRowA] = tmp.x;
+    As[(innerColA * 4 + 1) * BM + innerRowA] = tmp.y;
+    As[(innerColA * 4 + 2) * BM + innerRowA] = tmp.z;
+    As[(innerColA * 4 + 3) * BM + innerRowA] = tmp.w;
+
+    reinterpret_cast<float4 *>(&Bs[innerRowB * BN + innerColB * 4])[0] = 
+        reinterpret_cast<float4 *>(&B[innerRowB * N + innerCOlB * 4])[0];
+    __syncthreads();
+
+    A += BK;
+    B += BK * N;
+
+    for (int iDot = 0; iDot < BK; ++iDot) {
+      for (int iTM = 0; iTM < TM; ++iTM) {
+        regTM[iTM] = As[(iTM + tRow * TM) * BK + iDot];
+      }
+      for (int iTN = 0; iTN < TN; ++iTN) {
+        regTN[iTN] = Bs[iDot * BN + iTN + tCol * TN];
+      }
+
+      for (int iTM = 0; iTM < TM; ++iTM) {
+        for (int iTN = 0; iTN < TN; ++iTN) {
+          threadResults[iTM * TN + iTN] += regTM[iTM] * regTN[iTN];
+        }
+      }
+    }
+
+    __syncthreads();
+  }
+  uint index;
+  for (int iTM = 0; iTM < TM; iTM += 1) {
+    for (int iTN = 0; iTN < TN; iTN += 4) {
+      float4 tmp = reinterpret_cast<float4 *>(
+          &C[(tRow * TM + iTM) * N + tCol * TN + iTN])[0];
+      tmp.x = alpha * threadResults[iTM * TN + iTN + 0] + beta * tmp.x;
+      tmp.y = alpha * threadResults[iTM * TN + iTN + 1] + beta * tmp.y;
+      tmp.z = alpha * threadResults[iTM * TN + iTN + 2] + beta * tmp.z;
+      tmp.w = alpha * threadResults[iTM * TN + iTN + 3] + beta * tmp.w;
+      reinterpret_cast<float4 *>(&C[(tRow * TM + iTM) * N + tCol * TN + iTN])[0] = tmp;
+    }
+  }
+
+}
