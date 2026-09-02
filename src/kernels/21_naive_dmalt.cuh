@@ -249,7 +249,7 @@ __global__ void sgemm2DBlocktilingDmalt(int M, int N, int K, float alpha,
 
 template <const uint BM, const uint BN, const uint BK, const uint TM, const uint TN>
 __global__ void sgemmVectorizeDmalt(int M, int N, int K, float alpha,
-    const float *A, const float *B, float beta, float *C) {
+    float *A, float *B, float beta, float *C) {
   __shared__ float As[BM * BK];
   __shared__ float Bs[BK * BN];
 
