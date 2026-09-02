@@ -222,15 +222,15 @@ __global__ void sgemm2DBlocktilingDmalt(int M, int N, int K, float alpha,
 
     for (int iDot = 0; iDot < BK; ++iDot) {
       for (int iTM = 0; iTM < TM; ++iTM) {
-        regTM[iTM] = As[(iTM + tRow * TM) * self.BK + iDot];
+        regTM[iTM] = As[(iTM + tRow * TM) * BK + iDot];
       }
       for (int iTN = 0; iTN < TN; ++iTN) {
-        regTN[iTN] = Bs[iDot * self.BN + iTN + tCol * self.TN];
+        regTN[iTN] = Bs[iDot * BN + iTN + tCol * TN];
       }
 
       for (int iTM = 0; iTM < TM; ++iTM) {
         for (int iTN = 0; iTN < TN; ++iTN) {
-          threadResults[iTM * self.TN + iTN] += regTM[iTM] * regTN[iTN];
+          threadResults[iTM * TN + iTN] += regTM[iTM] * regTN[iTN];
         }
       }
     }
