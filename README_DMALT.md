@@ -288,16 +288,230 @@ Average elapsed time: (0.257308) s, performance: (  534.1) GFLOPS. size: (4096).
     L2 Hit Rate                 %        47.36
     Mem Pipes Busy              %        76.23
     ----------------- ----------- ------------
+
+```
+
+## 1D blocktiling
+
+```sh
+Running kernel 26 on device 0.
+Max size: 4096
+dimensions(m=n=k) 128, alpha: 0.5, beta: 3
+Average elapsed time: (0.000044) s, performance: (   95.3) GFLOPS. size: (128).
+dimensions(m=n=k) 256, alpha: 0.5, beta: 3
+Average elapsed time: (0.000081) s, performance: (  413.7) GFLOPS. size: (256).
+dimensions(m=n=k) 512, alpha: 0.5, beta: 3
+Average elapsed time: (0.000368) s, performance: (  728.6) GFLOPS. size: (512).
+dimensions(m=n=k) 1024, alpha: 0.5, beta: 3
+Average elapsed time: (0.002567) s, performance: (  836.6) GFLOPS. size: (1024).
+dimensions(m=n=k) 2048, alpha: 0.5, beta: 3
+Average elapsed time: (0.009488) s, performance: ( 1810.6) GFLOPS. size: (2048).
+dimensions(m=n=k) 4096, alpha: 0.5, beta: 3
+Average elapsed time: (0.071322) s, performance: ( 1927.0) GFLOPS. size: (4096).
+
+==PROF== Connected to process 1807 (/content/sgemm/build/sgemm)
+Running kernel 26 on device 0.
+Max size: 4096
+dimensions(m=n=k) 128, alpha: 0.5, beta: 3
+Average elapsed time: (0.000486) s, performance: (    8.6) GFLOPS. size: (128).
+dimensions(m=n=k) 256, alpha: 0.5, beta: 3
+Average elapsed time: (0.000512) s, performance: (   65.5) GFLOPS. size: (256).
+dimensions(m=n=k) 512, alpha: 0.5, beta: 3
+Average elapsed time: (0.000531) s, performance: (  505.8) GFLOPS. size: (512).
+dimensions(m=n=k) 1024, alpha: 0.5, beta: 3
+Average elapsed time: (0.002575) s, performance: (  834.0) GFLOPS. size: (1024).
+dimensions(m=n=k) 2048, alpha: 0.5, beta: 3
+Average elapsed time: (0.009757) s, performance: ( 1760.8) GFLOPS. size: (2048).
+dimensions(m=n=k) 4096, alpha: 0.5, beta: 3
+==PROF== Profiling "sgemm1DBlocktilingDmalt": 0%....50%....100% - 8 passes
+Average elapsed time: (0.144498) s, performance: (  951.1) GFLOPS. size: (4096).
+==PROF== Disconnected from process 1807
+[1807] sgemm@127.0.0.1
+  void sgemm1DBlocktilingDmalt<64, 64, 8, 8>(int, int, int, float, const float *, const float *, float, float *) (64, 64, 1)x(512, 1, 1), Context 1, Stream 7, Device 0, CC 7.5
+    Section: GPU Speed Of Light Throughput
+    ----------------------- ----------- -------------
+    Metric Name             Metric Unit  Metric Value
+    ----------------------- ----------- -------------
+    DRAM Frequency                  Ghz          5.00
+    SM Frequency                    Mhz        585.00
+    Elapsed Cycles                cycle    86,897,823
+    Memory Throughput                 %         54.12
+    DRAM Throughput                   %         13.09
+    Duration                         ms        148.54
+    L1/TEX Cache Throughput           %         91.54
+    L2 Cache Throughput               %          6.71
+    SM Active Cycles              cycle 86,380,004.95
+    Compute (SM) Throughput           %         54.12
+    ----------------------- ----------- -------------
+
+    OPT   This workload exhibits low compute throughput and memory bandwidth utilization relative to the peak
+          performance of this device. Achieved compute throughput and/or memory bandwidth below 60.0% of peak
+          typically indicate latency issues. Look at Scheduler Statistics and Warp State Statistics for potential
+          reasons.
+
+    Section: Memory Workload Analysis
+    ----------------- ----------- ------------
+    Metric Name       Metric Unit Metric Value
+    ----------------- ----------- ------------
+    Memory Throughput     Gbyte/s        41.85
+    Mem Busy                    %        45.77
+    Max Bandwidth               %        54.12
+    L1/TEX Hit Rate             %         0.77
+    L2 Hit Rate                 %        49.07
+    Mem Pipes Busy              %        54.12
+    ----------------- ----------- ------------
+```
+
+## 2D blocktiling
+
+```sh
+Running kernel 27 on device 0.
+Max size: 4096
+dimensions(m=n=k) 128, alpha: 0.5, beta: 3
+Average elapsed time: (0.000116) s, performance: (   36.3) GFLOPS. size: (128).
+dimensions(m=n=k) 256, alpha: 0.5, beta: 3
+Average elapsed time: (0.000196) s, performance: (  170.9) GFLOPS. size: (256).
+dimensions(m=n=k) 512, alpha: 0.5, beta: 3
+Average elapsed time: (0.000359) s, performance: (  748.5) GFLOPS. size: (512).
+dimensions(m=n=k) 1024, alpha: 0.5, beta: 3
+Average elapsed time: (0.001441) s, performance: ( 1490.0) GFLOPS. size: (1024).
+dimensions(m=n=k) 2048, alpha: 0.5, beta: 3
+Average elapsed time: (0.005598) s, performance: ( 3069.1) GFLOPS. size: (2048).
+dimensions(m=n=k) 4096, alpha: 0.5, beta: 3
+Average elapsed time: (0.040126) s, performance: ( 3425.2) GFLOPS. size: (4096).
+
+==PROF== Connected to process 3430 (/content/sgemm/build/sgemm)
+Running kernel 27 on device 0.
+Max size: 4096
+dimensions(m=n=k) 128, alpha: 0.5, beta: 3
+Average elapsed time: (0.000439) s, performance: (    9.5) GFLOPS. size: (128).
+dimensions(m=n=k) 256, alpha: 0.5, beta: 3
+Average elapsed time: (0.000377) s, performance: (   89.1) GFLOPS. size: (256).
+dimensions(m=n=k) 512, alpha: 0.5, beta: 3
+Average elapsed time: (0.000378) s, performance: (  709.6) GFLOPS. size: (512).
+dimensions(m=n=k) 1024, alpha: 0.5, beta: 3
+Average elapsed time: (0.001598) s, performance: ( 1343.6) GFLOPS. size: (1024).
+dimensions(m=n=k) 2048, alpha: 0.5, beta: 3
+Average elapsed time: (0.005671) s, performance: ( 3029.2) GFLOPS. size: (2048).
+dimensions(m=n=k) 4096, alpha: 0.5, beta: 3
+==PROF== Profiling "sgemm2DBlocktilingDmalt": 0%....50%....100% - 8 passes
+Average elapsed time: (0.099048) s, performance: ( 1387.6) GFLOPS. size: (4096).
+==PROF== Disconnected from process 3430
+[3430] sgemm@127.0.0.1
+  void sgemm2DBlocktilingDmalt<128, 128, 8, 8, 8>(int, int, int, float, const float *, const float *, float, float *) (32, 32, 1)x(256, 1, 1), Context 1, Stream 7, Device 0, CC 7.5
+    Section: GPU Speed Of Light Throughput
+    ----------------------- ----------- -------------
+    Metric Name             Metric Unit  Metric Value
+    ----------------------- ----------- -------------
+    DRAM Frequency                  Ghz          4.99
+    SM Frequency                    Mhz        585.00
+    Elapsed Cycles                cycle    44,701,799
+    Memory Throughput                 %         48.53
+    DRAM Throughput                   %         12.76
+    Duration                         ms         76.41
+    L1/TEX Cache Throughput           %         97.07
+    L2 Cache Throughput               %          7.22
+    SM Active Cycles              cycle 43,939,572.20
+    Compute (SM) Throughput           %         61.37
+    ----------------------- ----------- -------------
+
+    OPT   Compute is more heavily utilized than Memory: Look at the Compute Workload Analysis section to see what the
+          compute pipelines are spending their time doing. Also, consider whether any computation is redundant and
+          could be reduced or moved to look-up tables.
+
+    Section: Memory Workload Analysis
+    ----------------- ----------- ------------
+    Metric Name       Metric Unit Metric Value
+    ----------------- ----------- ------------
+    Memory Throughput     Gbyte/s        40.76
+    Mem Busy                    %        48.53
+    Max Bandwidth               %        26.39
+    L1/TEX Hit Rate             %        18.80
+    L2 Hit Rate                 %        57.42
+    Mem Pipes Busy              %        26.39
+    ----------------- ----------- ------------
+```
+
+## Vectorize
+
+```sh
+Running kernel 28 on device 0.
+Max size: 4096
+dimensions(m=n=k) 128, alpha: 0.5, beta: 3
+Average elapsed time: (0.000094) s, performance: (   44.8) GFLOPS. size: (128).
+dimensions(m=n=k) 256, alpha: 0.5, beta: 3
+Average elapsed time: (0.000172) s, performance: (  195.4) GFLOPS. size: (256).
+dimensions(m=n=k) 512, alpha: 0.5, beta: 3
+Average elapsed time: (0.000328) s, performance: (  819.0) GFLOPS. size: (512).
+dimensions(m=n=k) 1024, alpha: 0.5, beta: 3
+Average elapsed time: (0.001346) s, performance: ( 1595.3) GFLOPS. size: (1024).
+dimensions(m=n=k) 2048, alpha: 0.5, beta: 3
+Average elapsed time: (0.005472) s, performance: ( 3139.7) GFLOPS. size: (2048).
+dimensions(m=n=k) 4096, alpha: 0.5, beta: 3
+Average elapsed time: (0.036921) s, performance: ( 3722.5) GFLOPS. size: (4096).
+==PROF== Connected to process 4925 (/content/sgemm/build/sgemm)
+Running kernel 28 on device 0.
+Max size: 4096
+dimensions(m=n=k) 128, alpha: 0.5, beta: 3
+Average elapsed time: (0.000431) s, performance: (    9.7) GFLOPS. size: (128).
+dimensions(m=n=k) 256, alpha: 0.5, beta: 3
+Average elapsed time: (0.000397) s, performance: (   84.5) GFLOPS. size: (256).
+dimensions(m=n=k) 512, alpha: 0.5, beta: 3
+Average elapsed time: (0.000576) s, performance: (  465.7) GFLOPS. size: (512).
+dimensions(m=n=k) 1024, alpha: 0.5, beta: 3
+Average elapsed time: (0.001431) s, performance: ( 1500.2) GFLOPS. size: (1024).
+dimensions(m=n=k) 2048, alpha: 0.5, beta: 3
+Average elapsed time: (0.005443) s, performance: ( 3156.3) GFLOPS. size: (2048).
+dimensions(m=n=k) 4096, alpha: 0.5, beta: 3
+==PROF== Profiling "sgemmVectorizeDmalt": 0%....50%....100% - 8 passes
+Average elapsed time: (0.095558) s, performance: ( 1438.3) GFLOPS. size: (4096).
+==PROF== Disconnected from process 4925
+[4925] sgemm@127.0.0.1
+  void sgemmVectorizeDmalt<128, 128, 8, 8, 8>(int, int, int, float, float *, float *, float, float *) (32, 32, 1)x(256, 1, 1), Context 1, Stream 7, Device 0, CC 7.5
+    Section: GPU Speed Of Light Throughput
+    ----------------------- ----------- -------------
+    Metric Name             Metric Unit  Metric Value
+    ----------------------- ----------- -------------
+    DRAM Frequency                  Ghz          5.00
+    SM Frequency                    Mhz        585.00
+    Elapsed Cycles                cycle    41,577,791
+    Memory Throughput                 %         48.76
+    DRAM Throughput                   %         10.27
+    Duration                         ms         71.07
+    L1/TEX Cache Throughput           %         97.52
+    L2 Cache Throughput               %          7.22
+    SM Active Cycles              cycle 40,886,968.58
+    Compute (SM) Throughput           %         65.22
+    ----------------------- ----------- -------------
+
+    OPT   Compute is more heavily utilized than Memory: Look at the Compute Workload Analysis section to see what the
+          compute pipelines are spending their time doing. Also, consider whether any computation is redundant and
+          could be reduced or moved to look-up tables.
+
+    Section: Memory Workload Analysis
+    ----------------- ----------- ------------
+    Metric Name       Metric Unit Metric Value
+    ----------------- ----------- ------------
+    Memory Throughput     Gbyte/s        32.83
+    Mem Busy                    %        48.76
+    Max Bandwidth               %        26.32
+    L1/TEX Hit Rate             %         4.42
+    L2 Hit Rate                 %        60.10
+    Mem Pipes Busy              %        19.70
+    ----------------- ----------- ------------
 ```
 
 ## Comparison
 
 | Kernel name                  | 4096 GFLOPS | Mem TP 1 | DRAM TP | L1 TP | L2 TP | Compute TP | Mem TP 2 | Mem Busy | Max BW | L1 HR | L2 HR | Mem Pipes Busy |
 | ---------------------------- | ----------- | -------- | ------- | ----- | ----- | ---------- | -------- | -------- | ------ | ----- | ----- | -------------- |
-| sgemm_naive_dmalt            | 61.4        | 49.45    | 0.93    | 99.9  | 1.17  | 6.05       | 2.98     | 49.95    | 13.85  | 97.32 | 92.61 | 6.05           |
+| sgemm_naive_dmalt            | 61.4        | 49.95    | 0.93    | 99.9  | 1.17  | 6.05       | 2.98     | 49.95    | 13.85  | 97.32 | 92.61 | 6.05           |
 | sgemm_coalesce_indswap_dmalt | 447.1       | 77.68    | 8.84    | 77.79 | 4.18  | 77.68      | 28.25    | 38.84    | 77.68  | 94.98 | 49.56 | 77.68          |
 | sgemm_coalesce_dmalt         | 495.2       | 79.78    | 12.05   | 79.87 | 4.30  | 79.78      | 38.51    | 39.89    | 79.78  | 94.98 | 73.25 | 79.78          |
 | sgemm_shared_mem_block_dmalt | 866.3       | 76.23    | 12.90   | 90.41 | 5.97  | 76.23      | 41.24    | 45.21    | 76.23  | 0.39  | 47.36 | 76.23          |
+| gemm_1d_blocktiling          | 1927.0      | 54.1     | 13.09   | 91.54 | 6.71  | 54.12      | 41.85    | 45.77    | 54.12  | 0.77  | 49.07 | 54.12          |
+| gemm_2d_blocktiling          | 3425.2      | 48.53    | 12.76   | 97.07 | 7.22  | 61.37      | 40.76    | 48.53    | 26.39  | 18.80 | 57.42 | 26.39          |
+| gemm_vectorize               | 3722.5      | 48.76    | 10.27   | 97.52 | 7.22  | 65.22      | 32.83    | 48.76    | 26.32  | 4.42  | 60.10 | 19.70          |
 
 ## Notes
 
@@ -311,9 +525,9 @@ Average elapsed time: (0.257308) s, performance: (  534.1) GFLOPS. size: (4096).
 `sgemm_shared_mem_block_dmalt`
 
 Tiling was supposed to reduce the number of the DRAM accesses from 4096**3 *2
-to 32* 4096 *2* (4096 / 32)** 2 = 4096 \** 3 *2 / 32, so x32. However, we
+to 32* 4096 *2* (4096 / 32)** 2 = 4096 \**3 *2 / 32, so x32. However, we
 don't see it from the metrics. Mem TP 2 (Memory Throughput from the Memory
 Workload Analysis table) shows 41.24 GB/s* 331 ms = 13.65 GB of DRAM vs 38.51
-GB/s * 460 ms = 17.71 GB for the coalescing kernel, so the DRAM traffic is
+GB/s* 460 ms = 17.71 GB for the coalescing kernel, so the DRAM traffic is
 indeed reduced, but not 32-fold -- only by 23%. The suspected reason that L1
 cache absorbs the hit in the coalescing kernel.
