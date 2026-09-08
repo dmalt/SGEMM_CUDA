@@ -367,6 +367,30 @@ void runSgemmResolveBankConflicts(int M, int N, int K, float alpha, float *A,
   }
 }
 
+void runSgemmResolveBankConflictsDmalt(int M, int N, int K, float alpha, float *A,
+                                  float *B, float beta, float *C) {
+  const uint BK = 8;
+  const uint TM = 8;
+  const uint TN = 8;
+  if (M >= 128 and N >= 128) {
+    const uint BM = 128;
+    const uint BN = 128;
+    dim3 gridDim(CEIL_DIV(N, BN), CEIL_DIV(M, BM));
+    dim3 blockDim((BM * BN) / (TM * TN));
+    sgemmResolveBankConflictsDmalt<BM, BN, BK, TM, TN>
+        <<<gridDim, blockDim>>>(M, N, K, alpha, A, B, beta, C);
+  } else {
+    // this is a hacky solution to the underlying problem
+    // of not having proper bounds checking in the kernel
+    const uint BM = 64;
+    const uint BN = 64;
+    dim3 gridDim(CEIL_DIV(N, BN), CEIL_DIV(M, BM));
+    dim3 blockDim((BM * BN) / (TM * TN));
+    sgemmResolveBankConflictsDmalt<BM, BN, BK, TM, TN>
+        <<<gridDim, blockDim>>>(M, N, K, alpha, A, B, beta, C);
+  }
+}
+
 void runSgemmResolveBankExtraCol(int M, int N, int K, float alpha, float *A,
                                  float *B, float beta, float *C) {
   const uint BK = 8;
@@ -671,6 +695,9 @@ void run_kernel(int kernel_num, int M, int N, int K, float alpha, float *A,
     break;
   case 28:
     runSgemmVectorizeDmalt(M, N, K, alpha, A, B, beta, C);
+    break;
+  case 29:
+    runSgemmResolveBankConflictsDmalt(M, N, K, alpha, A, B, beta, C);
     break;
   default:
     throw std::invalid_argument("Unknown kernel number");
