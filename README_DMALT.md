@@ -70,10 +70,6 @@ Average elapsed time: (3.242528) s, performance: (   42.4) GFLOPS. size: (4096).
     ----------------- ----------- ------------
 ```
 
-The thing that stands out with the naive implementation is a poor utilization
-of
-the memory bandwidth (10.47%), which probably has to do with a poor access patterns. The coalescing kernel should be a remedy to that.
-
 ## Coalescing kernel
 
 ### Indswap
@@ -513,6 +509,200 @@ Average elapsed time: (0.095558) s, performance: ( 1438.3) GFLOPS. size: (4096).
 | gemm_2d_blocktiling          | 3425.2      | 48.53    | 12.76   | 97.07 | 7.22  | 61.37      | 40.76    | 48.53    | 26.39  | 18.80 | 57.42 | 26.39          |
 | gemm_vectorize               | 3722.5      | 48.76    | 10.27   | 97.52 | 7.22  | 65.22      | 32.83    | 48.76    | 26.32  | 4.42  | 60.10 | 19.70          |
 
+## Scheduler / warp state / occupancy
+
+Collected 2026-09-07. Every profile above this point used only two sections —
+Speed Of Light and Memory Workload Analysis — and **both measure resource
+utilisation.** Neither can show whether the schedulers had warps ready to
+issue, which is why the "latency issues" hint kept appearing with nothing to
+check it against. These three sections close that gap.
+
+```sh
+ncu --section SpeedOfLight --section Occupancy \
+    --section SchedulerStats --section WarpStateStats \
+    --kernel-name <name> --launch-skip 256 --launch-count 1 \
+    ./sgemm/build/sgemm <id>
+```
+
+All at 4096, T4 (CC 7.5), clocks locked by ncu at 585 MHz. The GFLOPS in the
+run logs are profiling artifacts, not the timing-run numbers.
+
+### Summary
+
+`Issued W/sched` maxes at 1.00 — one instruction per scheduler per cycle.
+`Active` is what Achieved Occupancy measures (warps resident); `Eligible` is
+the subset able to issue this cycle.
+
+| id  | rung         | duration | Occ % | Active W/sched | Eligible W/sched | Issued W/sched | No Eligible % | warp cyc / issued inst | dominant stall (share of that) |
+| --- | ------------ | -------- | ----- | -------------- | ---------------- | -------------- | ------------- | ---------------------- | ------------------------------ |
+| 21  | naive        | 6.07 s   | 97.91 | 7.83           | 0.08             | 0.03           | 96.87         | 250.39                 | LG Throttle 94.4% (236.3 cyc)  |
+| 23  | coalesce     | 460.3 ms | 99.82 | 7.99           | 1.44             | 0.41           | 58.75         | 19.37                  | LG Throttle 53.8% ( 10.4 cyc)  |
+| 25  | SMEM         | 331.3 ms | 99.98 | 8.00           | 0.88             | 0.19           | 80.64         | 41.32                  | MIO Throttle 64.7% ( 26.7 cyc) |
+| 26  | 1D blocktile | 148.7 ms | 49.99 | 4.00           | 0.55             | 0.26           | 74.48         | 15.67                  | MIO Throttle 38.6% ( 6.0 cyc)  |
+| 27  | 2D blocktile | 76.4 ms  | 49.23 | 3.94           | 0.84             | 0.37           | 62.65         | 10.55                  | MIO Throttle 34.2% ( 3.6 cyc)  |
+| 28  | vectorize    | 71.1 ms  | 49.32 | 3.94           | 0.79             | 0.37           | 62.88         | 10.62                  | MIO Throttle 31.9% ( 3.4 cyc)  |
+
+Launch configs, for reference:
+
+| id  | template params   | grid        | block      |
+| --- | ----------------- | ----------- | ---------- |
+| 21  | —                 | (128,128,1) | (32,32,1)  |
+| 23  | `<32>`            | (128,128,1) | (1024,1,1) |
+| 25  | `<32>`            | (128,128,1) | (1024,1,1) |
+| 26  | `<64,64,8,8>`     | (64,64,1)   | (512,1,1)  |
+| 27  | `<128,128,8,8,8>` | (32,32,1)   | (256,1,1)  |
+| 28  | `<128,128,8,8,8>` | (32,32,1)   | (256,1,1)  |
+
+Occupancy limiter, from the Occupancy section:
+
+| id  | Block Limit Registers | Block Limit Shared Mem | Block Limit Warps | Theoretical Occ % | ncu's stated limiter         |
+| --- | --------------------- | ---------------------- | ----------------- | ----------------- | ---------------------------- |
+| 21  | 1                     | 16                     | 1                 | 100               | —                            |
+| 23  | 1                     | 16                     | 1                 | 100               | —                            |
+| 25  | 1                     | 8                      | 1                 | 100               | —                            |
+| 26  | 1                     | 8                      | 2                 | 50                | number of required registers |
+| 27  | 2                     | 4                      | 4                 | 50                | number of required registers |
+| 28  | 2                     | 4                      | 4                 | 50                | number of required registers |
+
+### Raw — Scheduler Statistics
+
+```
+                              21 naive   23 coal   25 SMEM   26 1D    27 2D    28 vec
+One or More Eligible      %      3.13     41.25     19.36    25.52    37.35    37.12
+Issued Warp Per Scheduler        0.03      0.41      0.19     0.26     0.37     0.37
+No Eligible               %     96.87     58.75     80.64    74.48    62.65    62.88
+Active Warps Per Sched  warp     7.83      7.99      8.00     4.00     3.94     3.94
+Eligible Warps Per Sched warp    0.08      1.44      0.88     0.55     0.84     0.79
+```
+
+ncu's issue-interval phrasing, per kernel: 21 issues once every **32.0**
+cycles; 23 every **2.4**; 25 every **5.2**; 26 every **3.9**; 27 every
+**2.7**; 28 every **2.7**.
+
+### Raw — Warp State Statistics
+
+```
+                                        21 naive  23 coal  25 SMEM  26 1D   27 2D   28 vec
+Warp Cycles Per Issued Instruction        250.39    19.37    41.32   15.67   10.55   10.62
+Warp Cycles Per Executed Instruction      250.39    19.37    41.32   15.67   10.55   10.62
+Avg. Active Threads Per Warp                  32       32       32      32      32      32
+Avg. Not Predicated Off Threads Per Warp   32.00    32.00    31.99   32.00   32.00   32.00
+```
+
+Dominant stall, verbatim from the OPT rules:
+
+- **21, 23** — _"stalled waiting for the L1 instruction queue for local and
+  global (LG) memory operations to be not full. Typically, this stall occurs
+  only when executing local or global memory instructions extremely
+  frequently."_ 236.3 cyc / 94.4% for 21; 10.4 cyc / 53.8% for 23.
+- **25, 26, 27, 28** — _"stalled waiting for the MIO (memory input/output)
+  instruction queue to be not full. This stall reason is high in cases of
+  extreme utilization of the MIO pipelines, which include special math
+  instructions, dynamic branches, as well as shared memory instructions."_
+  26.7 cyc / 64.7% for 25; 6.0 / 38.6% for 26; 3.6 / 34.2% for 27; 3.4 /
+  31.9% for 28.
+
+`smsp__pcsamp_sample_count` was not collected, so the per-source Warp Stall
+Sampling table is unavailable — add it if the stall location matters.
+
+### SOL cross-check against the Comparison table above
+
+This run reproduces the earlier SOL numbers, with one correction: naive
+`Memory Throughput` is **49.95**, not the 49.45 recorded above.
+
+| id  | Mem TP % | DRAM % | L1/TEX % | L2 % | Compute SM % |
+| --- | -------- | ------ | -------- | ---- | ------------ |
+| 21  | 49.95    | 0.93   | 99.90    | 1.17 | 6.05         |
+| 23  | 79.78    | 12.05  | 79.88    | 4.30 | 79.78        |
+| 25  | 76.22    | 12.88  | 90.40    | 5.97 | 76.22        |
+| 26  | 54.07    | 13.05  | 91.45    | 6.70 | 54.07        |
+| 27  | 48.55    | 12.60  | 97.10    | 7.22 | 61.40        |
+| 28  | 48.75    | 10.28  | 97.50    | 7.22 | 65.21        |
+
+### Diagnosis
+
+The profiling ran in Google Colab on a T4 GPU.
+
+#### Naive kernel: 21
+
+The arithmetic intensity is at 7.55 FLOPs/byte. The total amount of computation
+required in theory should be `4096^2 * 4096 * 2 (for each element we do 4096
+fused add-multiplies, 2 FLOPs each) + 4096 ^ 2 * 2 (for adding alpha * C) =
+137472507904`. Divided by 18.13 GB of global memory traffic reported on the
+memory chart below (L2 <- Device Memory) that gives us 7.58 FLOPs/byte.
+
+![Memory graph](./assets/21_naive_memory_graph.png)
+
+The theoretical minimum for the memory traffic we can get is the size of the
+matrices themselves: `A_read + B_read + C_read + C_write = 4096^2 * 4 * 4 /
+1024^2 = 256 MiB (size * bytes in f32 * four matrices / bytes in MiB)`.
+
+In the worst case though, the amount of data the kernel could load
+is `4096^2 * 2 * 4096 (multiplied row and column) * 4 / 1024 ^ 3 = 512 GiB` (+ the C
+matrix read and write, which is negligible in comparison).
+
+Most of this memory traffic however is amortized by the caches: we end up loading
+"only" 18.13 GB. Notably, DRAM throughput stays very low at 0.96%, so loading these
+18GB from the global memory is not what makes the kernel slow.
+
+L1/TEX cache throughput shows `99.9%`. At the same time we see `16.5` sectors per
+request reported for L1/TEX Cache usage. What happens here is most of the
+accessed data is getting cached in L1. When we fetch the data from the cache,
+the access is structured in 32 bytes blocks (or 8 fp32 numbers), called
+sectors. Instructions to load the data from the memory are organized per-warp,
+so for 32 lanes in warp we are requesting 32 floating point numbers from L1. If these
+numbers are contiguous in memory, we would touch 4 sectors to access 32 numbers.
+If they are not, however, we would touch up to 32 sectors in the worst case.
+
+Let's break down the 16.5 sectors/request average we see:
+
+```cpp
+const uint x = blockIdx.x * blockDim.x + threadIdx.x;
+const uint y = blockIdx.y * blockDim.y + threadIdx.y;
+...
+for (int i = 0; i < K; i++) {
+  acc += A[x * K + i] * B[i * N + y];
+}
+```
+
+For `A[x * K + i]`, lanes in a warp, following the `x` index access the elements of
+the row-major matrix A in a column-major fashion, so each of the 32 accesses touches
+a unique sector, 32 sectors in total. Then, for `B[i * N + y]`, `y` is slow-varying,
+so the index is the same for each lane in the warp -- each lane loads the same
+element, resulting in a broadcast access pattern: 1 sector/request. On average we
+get `(32 + 1)/2 = 16.5` sectors/request.
+
+We can arrive at the same number by looking at the raw L1 traffic:
+`60.73 GB/ 32 B/sector = 1.8978125 GSectors` missed. Hit rate for L1 is 97.33%, so
+`1.8978125/(1-0.9733) = 71.079 GSectors` in total. Divide that by 4.3 G inst (the
+amount of instructions L1 cache sees) and we get 16.53, closely matching the reported
+number of sectors per request.
+
+Another reflection of the same issue hides in the scheduling stats with issued
+warp per scheduler showing only `0.03 = 1/32` instructions per cycle issued.
+Warps are effectively stalling because of the congested L1 pathway -- we can't hide
+latency because all warps are competing for the same downstream resource.
+We also see that achieved occupancy is reported at `97.91%`, pointing at the same thing:
+parallelism is not the issue: we have an excess of active warps, but we can't schedule
+them.
+
+Another two metrics pointing at the same thing: `Warp cycles per executed
+instruction=250.39` with `Stall LG throttle=236.32`, meaning that on average
+out of 250 cycles between two consecutive instructions to be issued, 236 cycles
+a warp waits for the L1 queue.
+
+Finally, we see that Compute Throughput is at mere `6.05%`. It's an aggregate metric,
+showing maximum utilization across a number of pipelines.
+In our case it coincides with `Mem Pipes Busy` from the `Memory Workload Analysis`.
+This can also be seen on the Pipe Utilization graph:
+
+![Pipe utilization](./assets/21_naive_pipes.png)
+
+LSU stands for Load Store Unit and its value is exactly `6.05%`. FMA = fused
+multiply-add pipeline shows mere `2.65%` - the pipeline that actually runs the arithmetic
+is barely active. All in all, the pipelines are doing nothing, while L1 cache
+throughput is at 99.9%.
+
 ## Notes
 
 `sgemm_coalesce_indswap_dmalt` vs `sgemm_coalesce_dmalt` shenanigan:
@@ -525,9 +715,9 @@ Average elapsed time: (0.095558) s, performance: ( 1438.3) GFLOPS. size: (4096).
 `sgemm_shared_mem_block_dmalt`
 
 Tiling was supposed to reduce the number of the DRAM accesses from 4096**3 *2
-to 32* 4096 *2* (4096 / 32)** 2 = 4096 \**3 *2 / 32, so x32. However, we
+to 32* 4096 *2* (4096 / 32)** 2 = 4096 \*_3 \_2 / 32, so x32. However, we
 don't see it from the metrics. Mem TP 2 (Memory Throughput from the Memory
-Workload Analysis table) shows 41.24 GB/s* 331 ms = 13.65 GB of DRAM vs 38.51
-GB/s* 460 ms = 17.71 GB for the coalescing kernel, so the DRAM traffic is
+Workload Analysis table) shows 41.24 GB/s_ 331 ms = 13.65 GB of DRAM vs 38.51
+GB/s\_ 460 ms = 17.71 GB for the coalescing kernel, so the DRAM traffic is
 indeed reduced, but not 32-fold -- only by 23%. The suspected reason that L1
 cache absorbs the hit in the coalescing kernel.
