@@ -675,7 +675,7 @@ get `(32 + 1)/2 = 16.5` sectors/request.
 We can arrive at the same number by looking at the raw L1 traffic:
 `60.73 GB/ 32 B/sector = 1.8978125 GSectors` missed. Hit rate for L1 is 97.33%, so
 `1.8978125/(1-0.9733) = 71.079 GSectors` in total. Divide that by 4.3 G inst (the
-amount of instructions L1 cache sees) and we get 16.53, closely matching the reported
+amount of requests L1 cache sees) and we get 16.53, closely matching the reported
 number of sectors per request.
 
 Another reflection of the same issue hides in the scheduling stats with issued
