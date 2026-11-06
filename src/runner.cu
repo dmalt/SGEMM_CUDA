@@ -223,6 +223,28 @@ void run_sgemm_shared_mem_block_dmalt(int M, int N, int K, float alpha, float *A
       <<<gridDim, blockDim>>>(M, N, K, alpha, A, B, beta, C);
 }
 
+void run_sgemm_shared_mem_block_runtime_dmalt(int M, int N, int K, float alpha,
+                                float *A, float *B, float beta, float *C) {
+  dim3 gridDim(CEIL_DIV(M, 32), CEIL_DIV(N, 32));
+  dim3 blockDim(32 * 32);
+  cudaFuncSetAttribute(sgemm_shared_mem_block_runtime_dmalt,
+                       cudaFuncAttributePreferredSharedMemoryCarveout,
+                       cudaSharedmemCarveoutMaxShared);
+  sgemm_shared_mem_block_runtime_dmalt
+      <<<gridDim, blockDim>>>(M, N, K, alpha, A, B, beta, C, 32);
+}
+
+void run_sgemm_shared_mem_block_nounroll_dmalt(int M, int N, int K, float alpha,
+                                float *A, float *B, float beta, float *C) {
+  dim3 gridDim(CEIL_DIV(M, 32), CEIL_DIV(N, 32));
+  dim3 blockDim(32 * 32);
+  cudaFuncSetAttribute(sgemm_shared_mem_block_nounroll_dmalt<32>,
+                       cudaFuncAttributePreferredSharedMemoryCarveout,
+                       cudaSharedmemCarveoutMaxShared);
+  sgemm_shared_mem_block_nounroll_dmalt<32>
+      <<<gridDim, blockDim>>>(M, N, K, alpha, A, B, beta, C, 32);
+}
+
 void runSgemm1DBlocktiling(int M, int N, int K, float alpha, float *A, float *B,
                            float beta, float *C) {
   const uint BM = 64;
@@ -698,6 +720,12 @@ void run_kernel(int kernel_num, int M, int N, int K, float alpha, float *A,
     break;
   case 29:
     runSgemmResolveBankConflictsDmalt(M, N, K, alpha, A, B, beta, C);
+    break;
+  case 30:
+    run_sgemm_shared_mem_block_runtime_dmalt(M, N, K, alpha, A, B, beta, C);
+    break;
+  case 31:
+    run_sgemm_shared_mem_block_nounroll_dmalt(M, N, K, alpha, A, B, beta, C);
     break;
   default:
     throw std::invalid_argument("Unknown kernel number");

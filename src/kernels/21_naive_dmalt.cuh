@@ -409,3 +409,86 @@ __global__ void sgemmResolveBankConflictsDmalt(int M, int N, int K, float alpha,
   }
 
 }
+
+// ---------------------------------------------------------------------------
+// Experiment: how much of kernel 25's win comes from compile-time geometry
+// (full unroll + immediate shared offsets) rather than from data locality?
+//
+// Both variants keep the SHARED ALLOCATION STATIC at 32x32, so the only thing
+// that changes versus 25 is what the compiler can resolve at compile time.
+// Correctness requires the host to pass bs == 32.
+// ---------------------------------------------------------------------------
+
+// Kernel 30: full runtime geometry. `bs` replaces BLOCKSIZE everywhere, so the
+// index math becomes integer div/mod and the inner loop cannot be unrolled.
+__global__ void sgemm_shared_mem_block_runtime_dmalt(int M, int N, int K,
+    float alpha, const float *A, const float *B, float beta, float *C, int bs) {
+
+  __shared__ float As[32 * 32];
+  __shared__ float Bs[32 * 32];
+
+  const uint bkRow = blockIdx.x;
+  const uint bkCol = blockIdx.y;
+
+  const uint tCol = threadIdx.x % bs;  // runtime modulo
+  const uint tRow = threadIdx.x / bs;  // runtime division
+
+  A += bkRow * bs * K;
+  B += bkCol * bs;
+  C += bs * (bkRow * N + bkCol);
+
+  float acc = 0.0;
+  for (int bkIdx = 0; bkIdx < K; bkIdx += bs) {
+    As[tRow * bs + tCol] = A[tRow * K + tCol];
+    Bs[tRow * bs + tCol] = B[tRow * N + tCol];
+    __syncthreads();
+
+    A += bs;
+    B += bs * N;
+
+    for (int i = 0; i < bs; i++) {
+      acc += As[tRow * bs + i] * Bs[i * bs + tCol];
+    }
+    __syncthreads();
+
+  }
+  C[tRow * N + tCol] = alpha * acc + C[tRow * N + tCol] * beta;
+}
+
+// Kernel 31: identical to 25 EXCEPT the inner loop trip count comes from `bs`.
+// All index arithmetic stays compile-time. This isolates the unrolling effect
+// alone, with no integer div/mod and no runtime strides.
+template <const uint BLOCKSIZE>
+__global__ void sgemm_shared_mem_block_nounroll_dmalt(int M, int N, int K,
+    float alpha, const float *A, const float *B, float beta, float *C, int bs) {
+
+  __shared__ float As[BLOCKSIZE * BLOCKSIZE];
+  __shared__ float Bs[BLOCKSIZE * BLOCKSIZE];
+
+  const uint bkRow = blockIdx.x;
+  const uint bkCol = blockIdx.y;
+
+  const uint tCol = threadIdx.x % BLOCKSIZE;
+  const uint tRow = threadIdx.x / BLOCKSIZE;
+
+  A += bkRow * BLOCKSIZE * K;
+  B += bkCol * BLOCKSIZE;
+  C += BLOCKSIZE * (bkRow * N + bkCol);
+
+  float acc = 0.0;
+  for (int bkIdx = 0; bkIdx < K; bkIdx += BLOCKSIZE) {
+    As[tRow * BLOCKSIZE + tCol] = A[tRow * K + tCol];
+    Bs[tRow * BLOCKSIZE + tCol] = B[tRow * N + tCol];
+    __syncthreads();
+
+    A += BLOCKSIZE;
+    B += BLOCKSIZE * N;
+
+    for (int i = 0; i < bs; i++) {  // runtime trip count, everything else static
+      acc += As[tRow * BLOCKSIZE + i] * Bs[i * BLOCKSIZE + tCol];
+    }
+    __syncthreads();
+
+  }
+  C[tRow * N + tCol] = alpha * acc + C[tRow * N + tCol] * beta;
+}
