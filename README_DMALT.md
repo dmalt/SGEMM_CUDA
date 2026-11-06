@@ -680,11 +680,10 @@ number of sectors per request.
 
 Another reflection of the same issue hides in the scheduling stats with issued
 warp per scheduler showing only `0.03 = 1/32` instructions per cycle issued.
-Warps are effectively stalling because of the congested L1 pathway -- we can't hide
-latency because all warps are competing for the same downstream resource.
-We also see that achieved occupancy is reported at `97.91%`, pointing at the same thing:
-parallelism is not the issue: we have an excess of active warps, but we can't schedule
-them.
+Warps are effectively stalling because of the congested L1 pathway: they are
+competing for the same downstream resource. We also see that achieved occupancy
+is reported at `97.91%`, pointing at the same thing: parallelism is not the
+issue: we have an excess of active warps, but we can't schedule them.
 
 Another two metrics pointing at the same thing: `Warp cycles per executed
 instruction=250.39` with `Stall LG throttle=236.32`, meaning that on average
