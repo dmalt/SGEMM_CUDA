@@ -128,7 +128,8 @@ template <const uint BLOCKSIZE, const uint STRIDE>
 __global__ void alignment_experiment(int M, int N, int K, float alpha,
     const float *A, const float *B, float beta, float *C) {
 
-  __shared__ float As[BLOCKSIZE * BLOCKSIZE];
+  // Rows of As are STRIDE floats apart; only the first BLOCKSIZE of each are used.
+  __shared__ float As[BLOCKSIZE * STRIDE];
   __shared__ float Bs[BLOCKSIZE * BLOCKSIZE];
 
   const uint bkRow = blockIdx.x;
@@ -143,7 +144,7 @@ __global__ void alignment_experiment(int M, int N, int K, float alpha,
 
   float acc = 0.0;
   for (int bkIdx = 0; bkIdx < K; bkIdx += BLOCKSIZE) {
-    As[tRow * BLOCKSIZE + tCol] = A[tRow * K + tCol];
+    As[tRow * STRIDE + tCol] = A[tRow * K + tCol];
     Bs[tRow * BLOCKSIZE + tCol] = B[tRow * N + tCol];
     __syncthreads();
 

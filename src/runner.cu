@@ -234,7 +234,7 @@ void alignment_experiment_33(int M, int N, int K, float alpha, float *A,
   // L1 cache becomes useless, since we access GMEM only via SMEM, so we carve
   // out all of L1 to SMEM. This doesn't currently make a difference, since
   // occupancy is limited by reg and thread count, but it's good to do anyway.
-  cudaFuncSetAttribute(sgemm_shared_mem_block_dmalt<32>,
+  cudaFuncSetAttribute(alignment_experiment<32, 33>,
                        cudaFuncAttributePreferredSharedMemoryCarveout,
                        cudaSharedmemCarveoutMaxShared);
   alignment_experiment<32, 33>
@@ -248,7 +248,7 @@ void alignment_experiment_34(int M, int N, int K, float alpha, float *A,
   // L1 cache becomes useless, since we access GMEM only via SMEM, so we carve
   // out all of L1 to SMEM. This doesn't currently make a difference, since
   // occupancy is limited by reg and thread count, but it's good to do anyway.
-  cudaFuncSetAttribute(sgemm_shared_mem_block_dmalt<32>,
+  cudaFuncSetAttribute(alignment_experiment<32, 34>,
                        cudaFuncAttributePreferredSharedMemoryCarveout,
                        cudaSharedmemCarveoutMaxShared);
   alignment_experiment<32, 34>
@@ -262,7 +262,7 @@ void alignment_experiment_36(int M, int N, int K, float alpha, float *A,
   // L1 cache becomes useless, since we access GMEM only via SMEM, so we carve
   // out all of L1 to SMEM. This doesn't currently make a difference, since
   // occupancy is limited by reg and thread count, but it's good to do anyway.
-  cudaFuncSetAttribute(sgemm_shared_mem_block_dmalt<32>,
+  cudaFuncSetAttribute(alignment_experiment<32, 36>,
                        cudaFuncAttributePreferredSharedMemoryCarveout,
                        cudaSharedmemCarveoutMaxShared);
   alignment_experiment<32, 36>
