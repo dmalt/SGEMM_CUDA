@@ -702,6 +702,325 @@ multiply-add pipeline shows mere `2.65%` - the pipeline that actually runs the a
 is barely active. All in all, the pipelines are doing nothing, while L1 cache
 throughput is at 99.9%.
 
+#### Kernel 23: memory coalescing
+
+After fixing the coalescing issue on the naive kernel, we see more than a 10x improvement
+in the kernel duration: from 6s to 451 ms. The metrics that we observed earlier also
+look better now:
+
+- SM Throughput: `6.05% -> 79.2%` (Bounded now by memory throughput, same `79.2%`)
+- DRAM Throughput: `0.96% -> 12.27%`
+- L1/TEX Cache Throughput: `99.9 % -> 79.35%`
+- Global Load Sectors/req: `16.5 -> 2.5`
+- Issued warp per scheduler: `0.03 -> 0.41`
+- Warp Cycles Per Issued Instruction: `250.39 -> 19.52 cycles`
+- Stall LG Throttle: `236 -> 10.4 cycles`
+- L1 <- L2 memory traffic: `60 -> 17 GB`
+- Compute Workload Analysis: FMA: `2.65 -> 37.14`
+
+Metrics normalized by a lot! At the same time, we're still bounded by the L1:
+warps are waiting for 10 cycles on average in the L1 instructions queue (Stall
+LG Throttle metric).
+
+#### Kernel 25: shared memory blocking
+
+For the next kernel the performance boost is significant: kernel duration drops
+from 451 ms to 322 ms. We also note from the Warp State Statistics that the
+limiting factor is not `Stall LG Throttle` anymore. Instead it's `Stall MIO
+Throttle` at 26.72 cycles (MIO is the pipeline concerning the shared memory among other things).
+Warp Cycles Per Issued Instruction also worsened to 41.36 cycles. But despite
+those metrics being worse, we see that the total number of instructions went
+down from 17.7G to 6G suggesting that we're doing less work now - almost 3-fold.
+
+The original Boehm's writeup suggests that the performance increase for this kernel
+should be attributed to the better data locality moving the matrices from global
+to the shared memory. We saw however that for kernel 23 most of the traffic from DRAM
+was already handled by the L1 cache, which runs on the same hardware as SMEM. Together
+with worse Warp State metrics that hints that there might be more going on than mere
+data locality.
+
+I was pretty puzzled by the stats for this kernel and spent quite some time here.
+One thing that catches the eye is the difference in the `Instruction
+Statistics`: k23 has a lot of Integer SASS instructions compared to k25.
+
+![k23 instrutions](./assets/k23_instruction_stats.png)
+
+![k25 instrutions](./assets/k25_instruction_stats.png)
+
+It's more than 10x difference in the absolute counts, making the integer
+instructions the most frequent ones for k23. Apparently, this has to do with
+how the addressing for the global memory works. First, the memory addresses for
+DRAM are 64 bit instead of 32 bit for SMEM, so they require 2 instructions for
+the pointer arithmetic instead of one. Second, for k25 we don't need the
+pointer arithmetic as much: for SMEM accesses we don't need it at all because
+the base is computed once per thread and for the inner loop we do the full
+unrolling. For the global memory addressing, when loading the blocks into the
+shared memory the number of integer operations is amortized since we load the
+elements concurrently in a block and then reuse them in k25, as opposed to
+loading from DRAM on every cycle of the inner loop for k23, where we need the
+integer arithmetic to happen every time.
+
+Integer arithmetic however is not the bottleneck for this kernel. It relies on the
+ALU and FMA pipes, and we're being limited by the LG Throttle for k23 and MIO Throttle
+for k25. Both MIO and LG under the hood rely on the same hardware, namely the shared
+memory unit, since L1 cache also resides in the shared memory. So why do we see
+any performance gains at all, if we effectively have the same memory access pattern?
+The answer to that hides behind the `Memory Workload Analysis` stats:
+
+![K23 memory workload](./assets/k23_memory_workload.png)
+
+![K25 memory workload](./assets/k25_memory_workload.png)
+
+We see that for k25 the number of requests to the shared memory is much smaller
+than the analogous number of k23's requests to L1: it's 2.68 G vs 4.30 G. That's interesting!
+Let's try to calculate naively, how many SMEM requests our kernel need for a `4096x4096`
+matrix multiplication. First, the inner loop is 4096 iterations, and inside we need
+to load elements of A and B, from L1 in case of k23 and from SMEM in case of k25.
+Then there are 4096^2 such loops, one per the output element, so `4096^3 * 2`, and that
+total must be divided by 32, since the requests are formed per warp. That gives
+`4096^3 * 2 / 32 = 4 294 967 296` - our 4.3 G for k23 up to a small delta.
+The same should be true for k25, but its number of requests is almost 2 times lower!
+The answer lies in the SASS source code for k25:
+
+```asm
+LDS.U R30, [R0.X4+0x1000]
+LDS.U.128 R8, [R29]
+LDS.U R33, [R0.X4+0x1080]
+LDS.U R34, [R0.X4+0x1100]
+LDS.U R35, [R0.X4+0x1180]
+LDS.U R37, [R0.X4+0x1200]
+LDS.U.128 R16, [R29+0x10]
+LDS.U R38, [R0.X4+0x1280]
+LDS.U R39, [R0.X4+0x1300]
+LDS.U R40, [R0.X4+0x1380]
+FFMA R8, R30, R8, R31
+LDS.U R41, [R0.X4+0x1400]
+LDS.U.128 R12, [R29+0x20]
+FFMA R9, R33, R9, R8
+FFMA R10, R34, R10, R9
+LDS.U R32, [R0.X4+0x1480]
+FFMA R11, R35, R11, R10
+LDS.U R42, [R0.X4+0x1500]
+LDS.U R30, [R0.X4+0x1580]
+FFMA R16, R37, R16, R11
+LDS.U R31, [R0.X4+0x1600]
+LDS.U.128 R4, [R29+0x30]
+FFMA R17, R38, R17, R16
+FFMA R18, R39, R18, R17
+LDS.U R36, [R0.X4+0x1680]
+FFMA R19, R40, R19, R18
+LDS.U R37, [R0.X4+0x1700]
+LDS.U R34, [R0.X4+0x1780]
+FFMA R12, R41, R12, R19
+LDS.U R33, [R0.X4+0x1800]
+LDS.U.128 R8, [R29+0x40]
+FFMA R13, R32, R13, R12
+FFMA R13, R42, R14, R13
+LDS.U R38, [R0.X4+0x1880]
+FFMA R13, R30, R15, R13
+LDS.U R39, [R0.X4+0x1900]
+LDS.U R32, [R0.X4+0x1980]
+FFMA R4, R31, R4, R13
+LDS.U R35, [R0.X4+0x1a00]
+LDS.U.128 R16, [R29+0x50]
+FFMA R5, R36, R5, R4
+FFMA R5, R37, R6, R5
+LDS.U R30, [R0.X4+0x1a80]
+FFMA R5, R34, R7, R5
+LDS.U R31, [R0.X4+0x1b00]
+LDS.U R36, [R0.X4+0x1b80]
+FFMA R5, R33, R8, R5
+LDS.U R37, [R0.X4+0x1c00]
+LDS.U.128 R12, [R29+0x60]
+FFMA R5, R38, R9, R5
+FFMA R10, R39, R10, R5
+LDS.U R34, [R0.X4+0x1c80]
+FFMA R10, R32, R11, R10
+LDS.U R8, [R0.X4+0x1d00]
+LDS.U R9, [R0.X4+0x1d80]
+FFMA R10, R35, R16, R10
+LDS.U R33, [R0.X4+0x1e00]
+LDS.U.128 R4, [R29+0x70]
+FFMA R17, R30, R17, R10
+FFMA R18, R31, R18, R17
+LDS.U R11, [R0.X4+0x1e80]
+FFMA R19, R36, R19, R18
+LDS.U R16, [R0.X4+0x1f00]
+LDS.U R10, [R0.X4+0x1f80]
+FFMA R12, R37, R12, R19
+FFMA R13, R34, R13, R12
+FFMA R8, R8, R14, R13
+FFMA R9, R9, R15, R8
+FFMA R4, R33, R4, R9
+FFMA R5, R11, R5, R4
+FFMA R6, R16, R6, R5
+FFMA R31, R10, R7, R6
+```
+
+This is a fully unrolled inner loop. The interesting part there is that it uses
+`LDS.U.128` instructions. If we look at the analogous part of k23, we'll see
+
+```asm
+IADD3 R4, R24, -0x3, RZ
+IMAD.MOV.U32 R19, RZ, RZ, 0x4
+IADD3 R8, R24, -0x2, RZ
+IADD3 R12, R24, -0x1, RZ
+IMAD.WIDE.U32 R4, R4, R19, c[0x0][0x170]
+IMAD.WIDE.U32 R6, R28, R19, c[0x0][0x178]
+LDG.E.SYS R4, [R4]
+IMAD.WIDE.U32 R8, R8, R19, c[0x0][0x170]
+LDG.E.SYS R7, [R6]
+IMAD.WIDE.U32 R10, R25, R19, c[0x0][0x178]
+IMAD.WIDE.U32 R12, R12, R19, c[0x0][0x170]
+LDG.E.SYS R8, [R8]
+IMAD.WIDE.U32 R14, R26, R19, c[0x0][0x178]
+LDG.E.SYS R11, [R10]
+IMAD.WIDE.U32 R16, R24, R19, c[0x0][0x170]
+LDG.E.SYS R12, [R12]
+IMAD.WIDE.U32 R18, R27, R19, c[0x0][0x178]
+LDG.E.SYS R15, [R14]
+LDG.E.SYS R16, [R16]
+LDG.E.SYS R19, [R18]
+```
+
+It uses bare `LDG` -- the global memory instruction, which we know to be
+hitting `L1`. So no vectorized access. So the hypothesis is that using shared memory
+blocks enabled us make a better use of the vectorized memory access -- it has nothing to
+do with data locality. To demonstrate this, I've coded 2 versions of the same kernel that
+attempt to disrupt this memory access pattern by using the runtime version of
+`BLOCKSIZE` instead of the compile-time one, kernels 30 and 31:
+
+```cpp
+// Kernel 30: full runtime geometry. `bs` replaces BLOCKSIZE everywhere, so the
+// index math becomes integer div/mod and the inner loop cannot be unrolled.
+__global__ void sgemm_shared_mem_block_runtime_dmalt(int M, int N, int K,
+    float alpha, const float *A, const float *B, float beta, float *C, int bs) {
+
+  __shared__ float As[32 * 32];
+  __shared__ float Bs[32 * 32];
+
+  const uint bkRow = blockIdx.x;
+  const uint bkCol = blockIdx.y;
+
+  const uint tCol = threadIdx.x % bs;  // runtime modulo
+  const uint tRow = threadIdx.x / bs;  // runtime division
+
+  A += bkRow * bs * K;
+  B += bkCol * bs;
+  C += bs * (bkRow * N + bkCol);
+
+  float acc = 0.0;
+  for (int bkIdx = 0; bkIdx < K; bkIdx += bs) {
+    As[tRow * bs + tCol] = A[tRow * K + tCol];
+    Bs[tRow * bs + tCol] = B[tRow * N + tCol];
+    __syncthreads();
+
+    A += bs;
+    B += bs * N;
+
+    for (int i = 0; i < bs; i++) {
+      acc += As[tRow * bs + i] * Bs[i * bs + tCol];
+    }
+    __syncthreads();
+
+  }
+  C[tRow * N + tCol] = alpha * acc + C[tRow * N + tCol] * beta;
+}
+
+// Kernel 31: identical to 25 EXCEPT the inner loop trip count comes from `bs`.
+// All index arithmetic stays compile-time. This isolates the unrolling effect
+// alone, with no integer div/mod and no runtime strides.
+template <const uint BLOCKSIZE>
+__global__ void sgemm_shared_mem_block_nounroll_dmalt(int M, int N, int K,
+    float alpha, const float *A, const float *B, float beta, float *C, int bs) {
+
+  __shared__ float As[BLOCKSIZE * BLOCKSIZE];
+  __shared__ float Bs[BLOCKSIZE * BLOCKSIZE];
+
+  const uint bkRow = blockIdx.x;
+  const uint bkCol = blockIdx.y;
+
+  const uint tCol = threadIdx.x % BLOCKSIZE;
+  const uint tRow = threadIdx.x / BLOCKSIZE;
+
+  A += bkRow * BLOCKSIZE * K;
+  B += bkCol * BLOCKSIZE;
+  C += BLOCKSIZE * (bkRow * N + bkCol);
+
+  float acc = 0.0;
+  for (int bkIdx = 0; bkIdx < K; bkIdx += BLOCKSIZE) {
+    As[tRow * BLOCKSIZE + tCol] = A[tRow * K + tCol];
+    Bs[tRow * BLOCKSIZE + tCol] = B[tRow * N + tCol];
+    __syncthreads();
+
+    A += BLOCKSIZE;
+    B += BLOCKSIZE * N;
+
+    for (int i = 0; i < bs; i++) {  // runtime trip count, everything else static
+      acc += As[tRow * BLOCKSIZE + i] * Bs[i * BLOCKSIZE + tCol];
+    }
+    __syncthreads();
+
+  }
+  C[tRow * N + tCol] = alpha * acc + C[tRow * N + tCol] * beta;
+}
+```
+
+The difference with k25 is that for k30 the `BLOCKSIZE` parameter is completely
+replaced by a runtime parameter `bs`, and for k31 `bs` replaces only the inner
+loop limit -- at this point Claude suggested that k25's performance gain might
+be related to full the unrolling of the inner loop, which would be hindered by
+the loop bound unknown at compile time.
+
+And the performance for the 2 kernels is: \[...drum roll\]
+
+- k30: 447ms
+- k31: 345ms.
+
+So replacing the `BLOCKSIZE` with a runtime variable puts the smem blocking kernel back
+to the k23's performance!
+
+Let's take a look at the number of `SMEM` requests for these two kernels:
+
+- k30: 4.29 G
+- k31: 3.22 G
+
+So k30 is back to 2 requests/iteration -- no vectorization (confirmed by its SASS).
+But k31 is weird: some vectorization is there, but it's not the same as k25. SASS sheds
+light on it:
+
+![K31 inner loop SASS](./assets/k31_sass.png)
+
+So it uses `LDS.U.64` instructions! Why not `LDS.U.128`? I don't know. But that explains
+the difference in the requests total.
+
+Another puzzling thing is that despite the number of requests to SMEM being
+significantly higher for k31 vs k25 (3.22 G vs 2.68 G) performance stays on
+par: 345 ms vs 322 ms. That was quite puzzling to me at first. I'm just gonna
+give away the answer here: it's because both vectorization instructions result
+in the same amount of the shared memory wavefronts:
+
+| kernel | Requests   | Wavefronts |
+| ------ | ---------- | ---------- |
+| k23    | 4295491584 | 4295491584 |
+| k25    | 2684354560 | 3221225472 |
+| k30    | 4294967296 | 4294967296 |
+| k31    | 3221225472 | 3221225472 |
+
+So we see that k25 is the only kernel for which the number of requests doesn't
+match the number of wavefronts. Likely, what happens here is that `LDS.U.128`
+is translated into 2 wavefronts, while `LDS.U.64` - into 1. Using the same
+arithmetic, but with 1.25 and 1.5 LDS/iteration instead of 2 we get exactly
+2.68 G and 3.22 G requests. Note, that, the wavefronts number matches the
+kernels' performance: k25 is on par with k31, while k23 is similar to k30.
+
+One thing to mention regarding the table above is that number in the table
+above come from two different subsections in the `Memory Workload Analysis`
+section: for k25, k30 and k31 I report `Shared Memory -> Shared Load` requests
+and wavefronts, while for k23 the numbers come from `L1/TEX Cache -> Global
+Load`, which should make provided what we already discussed.
+
+
 ## Notes
 
 `sgemm_coalesce_indswap_dmalt` vs `sgemm_coalesce_dmalt` shenanigan:
