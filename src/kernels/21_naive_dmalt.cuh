@@ -124,6 +124,41 @@ __global__ void sgemm_shared_mem_block_dmalt(int M, int N, int K, float alpha,
   C[tRow * N + tCol] = alpha * acc + C[tRow * N + tCol] * beta;
 }
 
+template <const uint BLOCKSIZE, const uint STRIDE>
+__global__ void alignment_experiment(int M, int N, int K, float alpha,
+    const float *A, const float *B, float beta, float *C) {
+
+  __shared__ float As[BLOCKSIZE * BLOCKSIZE];
+  __shared__ float Bs[BLOCKSIZE * BLOCKSIZE];
+
+  const uint bkRow = blockIdx.x;
+  const uint bkCol = blockIdx.y;
+
+  const uint tCol = threadIdx.x % BLOCKSIZE;  // thread column
+  const uint tRow = threadIdx.x / BLOCKSIZE;  // thread row
+
+  A += bkRow * BLOCKSIZE * K;
+  B += bkCol * BLOCKSIZE;
+  C += BLOCKSIZE * (bkRow * N + bkCol);
+
+  float acc = 0.0;
+  for (int bkIdx = 0; bkIdx < K; bkIdx += BLOCKSIZE) {
+    As[tRow * BLOCKSIZE + tCol] = A[tRow * K + tCol];
+    Bs[tRow * BLOCKSIZE + tCol] = B[tRow * N + tCol];
+    __syncthreads();
+
+    A += BLOCKSIZE;
+    B += BLOCKSIZE * N;
+
+    for (int i = 0; i < BLOCKSIZE; i++) {
+      acc += As[tRow * STRIDE + i] * Bs[i * BLOCKSIZE + tCol];
+    }
+    __syncthreads();
+
+  }
+  C[tRow * N + tCol] = alpha * acc + C[tRow * N + tCol] * beta;
+}
+
 
 template <const uint BM, const uint BN, const uint BK, const uint TM>
 __global__ void sgemm1DBlocktilingDmalt(int M, int N, int K, float alpha,

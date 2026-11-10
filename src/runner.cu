@@ -54,7 +54,7 @@ void CudaDeviceInfo() {
 void randomize_matrix(float *mat, int N) {
   // NOTICE: Use gettimeofday instead of srand((unsigned)time(NULL)); the time
   // precision is too low and the same random number is generated.
-  struct timeval time {};
+  struct timeval time{};
   gettimeofday(&time, nullptr);
   srand(time.tv_usec);
   for (int i = 0; i < N; i++) {
@@ -156,28 +156,31 @@ void run_sgemm_naive(int M, int N, int K, float alpha, float *A, float *B,
   sgemm_naive<<<gridDim, blockDim>>>(M, N, K, alpha, A, B, beta, C);
 }
 
-void run_sgemm_naive_dmalt(int M, int N, int K, float alpha, float *A,
-                           float *B, float beta, float *C) {
+void run_sgemm_naive_dmalt(int M, int N, int K, float alpha, float *A, float *B,
+                           float beta, float *C) {
   dim3 gridDim(CEIL_DIV(M, 32), CEIL_DIV(N, 32));
   dim3 blockDim(32, 32);
   sgemm_naive_dmalt<<<gridDim, blockDim>>>(M, N, K, alpha, A, B, beta, C);
-
 }
 
-void run_sgemm_coalesce_indswap_dmalt(int M, int N, int K, float alpha, float *A,
-                           float *B, float beta, float *C) {
-  dim3 gridDim(CEIL_DIV(N, 32), CEIL_DIV(M, 32));  // N and M are swapped on purpose
+void run_sgemm_coalesce_indswap_dmalt(int M, int N, int K, float alpha,
+                                      float *A, float *B, float beta,
+                                      float *C) {
+  dim3 gridDim(CEIL_DIV(N, 32),
+               CEIL_DIV(M, 32)); // N and M are swapped on purpose
   dim3 blockDim(32, 32);
-  sgemm_coalesce_indswap_dmalt<<<gridDim, blockDim>>>(M, N, K, alpha, A, B, beta, C);
-
+  sgemm_coalesce_indswap_dmalt<<<gridDim, blockDim>>>(M, N, K, alpha, A, B,
+                                                      beta, C);
 }
 
-void run_sgemm_coalesce_gridswap_dmalt(int M, int N, int K, float alpha, float *A,
-                           float *B, float beta, float *C) {
-  dim3 gridDim(CEIL_DIV(M, 32), CEIL_DIV(N, 32));  // N and M are swapped on purpose
+void run_sgemm_coalesce_gridswap_dmalt(int M, int N, int K, float alpha,
+                                       float *A, float *B, float beta,
+                                       float *C) {
+  dim3 gridDim(CEIL_DIV(M, 32),
+               CEIL_DIV(N, 32)); // N and M are swapped on purpose
   dim3 blockDim(32, 32);
-  sgemm_coalesce_gridswap_dmalt<<<gridDim, blockDim>>>(M, N, K, alpha, A, B, beta, C);
-
+  sgemm_coalesce_gridswap_dmalt<<<gridDim, blockDim>>>(M, N, K, alpha, A, B,
+                                                       beta, C);
 }
 void run_sgemm_coalesce(int M, int N, int K, float alpha, float *A, float *B,
                         float beta, float *C) {
@@ -187,8 +190,8 @@ void run_sgemm_coalesce(int M, int N, int K, float alpha, float *A, float *B,
       <<<gridDim, blockDim>>>(M, N, K, alpha, A, B, beta, C);
 }
 
-void run_sgemm_coalesce_dmalt(int M, int N, int K, float alpha, float *A, float *B,
-                              float beta, float *C) {
+void run_sgemm_coalesce_dmalt(int M, int N, int K, float alpha, float *A,
+                              float *B, float beta, float *C) {
   dim3 gridDim(CEIL_DIV(M, 32), CEIL_DIV(N, 32));
   dim3 blockDim(32 * 32);
   sgemm_coalesce_dmalt<32>
@@ -209,8 +212,9 @@ void run_sgemm_shared_mem_block(int M, int N, int K, float alpha, float *A,
       <<<gridDim, blockDim>>>(M, N, K, alpha, A, B, beta, C);
 }
 
-void run_sgemm_shared_mem_block_dmalt(int M, int N, int K, float alpha, float *A,
-                                float *B, float beta, float *C) {
+void run_sgemm_shared_mem_block_dmalt(int M, int N, int K, float alpha,
+                                      float *A, float *B, float beta,
+                                      float *C) {
   dim3 gridDim(CEIL_DIV(M, 32), CEIL_DIV(N, 32));
   dim3 blockDim(32 * 32);
   // L1 cache becomes useless, since we access GMEM only via SMEM, so we carve
@@ -223,19 +227,63 @@ void run_sgemm_shared_mem_block_dmalt(int M, int N, int K, float alpha, float *A
       <<<gridDim, blockDim>>>(M, N, K, alpha, A, B, beta, C);
 }
 
+void alignment_experiment_33(int M, int N, int K, float alpha, float *A,
+                             float *B, float beta, float *C) {
+  dim3 gridDim(CEIL_DIV(M, 32), CEIL_DIV(N, 32));
+  dim3 blockDim(32 * 32);
+  // L1 cache becomes useless, since we access GMEM only via SMEM, so we carve
+  // out all of L1 to SMEM. This doesn't currently make a difference, since
+  // occupancy is limited by reg and thread count, but it's good to do anyway.
+  cudaFuncSetAttribute(sgemm_shared_mem_block_dmalt<32>,
+                       cudaFuncAttributePreferredSharedMemoryCarveout,
+                       cudaSharedmemCarveoutMaxShared);
+  alignment_experiment<32, 33>
+      <<<gridDim, blockDim>>>(M, N, K, alpha, A, B, beta, C);
+}
+
+void alignment_experiment_34(int M, int N, int K, float alpha, float *A,
+                             float *B, float beta, float *C) {
+  dim3 gridDim(CEIL_DIV(M, 32), CEIL_DIV(N, 32));
+  dim3 blockDim(32 * 32);
+  // L1 cache becomes useless, since we access GMEM only via SMEM, so we carve
+  // out all of L1 to SMEM. This doesn't currently make a difference, since
+  // occupancy is limited by reg and thread count, but it's good to do anyway.
+  cudaFuncSetAttribute(sgemm_shared_mem_block_dmalt<32>,
+                       cudaFuncAttributePreferredSharedMemoryCarveout,
+                       cudaSharedmemCarveoutMaxShared);
+  alignment_experiment<32, 34>
+      <<<gridDim, blockDim>>>(M, N, K, alpha, A, B, beta, C);
+}
+
+void alignment_experiment_36(int M, int N, int K, float alpha, float *A,
+                             float *B, float beta, float *C) {
+  dim3 gridDim(CEIL_DIV(M, 32), CEIL_DIV(N, 32));
+  dim3 blockDim(32 * 32);
+  // L1 cache becomes useless, since we access GMEM only via SMEM, so we carve
+  // out all of L1 to SMEM. This doesn't currently make a difference, since
+  // occupancy is limited by reg and thread count, but it's good to do anyway.
+  cudaFuncSetAttribute(sgemm_shared_mem_block_dmalt<32>,
+                       cudaFuncAttributePreferredSharedMemoryCarveout,
+                       cudaSharedmemCarveoutMaxShared);
+  alignment_experiment<32, 36>
+      <<<gridDim, blockDim>>>(M, N, K, alpha, A, B, beta, C);
+}
+
 void run_sgemm_shared_mem_block_runtime_dmalt(int M, int N, int K, float alpha,
-                                float *A, float *B, float beta, float *C) {
+                                              float *A, float *B, float beta,
+                                              float *C) {
   dim3 gridDim(CEIL_DIV(M, 32), CEIL_DIV(N, 32));
   dim3 blockDim(32 * 32);
   cudaFuncSetAttribute(sgemm_shared_mem_block_runtime_dmalt,
                        cudaFuncAttributePreferredSharedMemoryCarveout,
                        cudaSharedmemCarveoutMaxShared);
-  sgemm_shared_mem_block_runtime_dmalt
-      <<<gridDim, blockDim>>>(M, N, K, alpha, A, B, beta, C, 32);
+  sgemm_shared_mem_block_runtime_dmalt<<<gridDim, blockDim>>>(M, N, K, alpha, A,
+                                                              B, beta, C, 32);
 }
 
 void run_sgemm_shared_mem_block_nounroll_dmalt(int M, int N, int K, float alpha,
-                                float *A, float *B, float beta, float *C) {
+                                               float *A, float *B, float beta,
+                                               float *C) {
   dim3 gridDim(CEIL_DIV(M, 32), CEIL_DIV(N, 32));
   dim3 blockDim(32 * 32);
   cudaFuncSetAttribute(sgemm_shared_mem_block_nounroll_dmalt<32>,
@@ -257,8 +305,8 @@ void runSgemm1DBlocktiling(int M, int N, int K, float alpha, float *A, float *B,
       <<<gridDim, blockDim>>>(M, N, K, alpha, A, B, beta, C);
 }
 
-void runSgemm1DBlocktilingDmalt(int M, int N, int K, float alpha, float *A, float *B,
-                           float beta, float *C) {
+void runSgemm1DBlocktilingDmalt(int M, int N, int K, float alpha, float *A,
+                                float *B, float beta, float *C) {
   const uint BM = 64;
   const uint BN = 64;
   const uint BK = 8;
@@ -293,8 +341,8 @@ void runSgemm2DBlocktiling(int M, int N, int K, float alpha, float *A, float *B,
   }
 }
 
-void runSgemm2DBlocktilingDmalt(int M, int N, int K, float alpha, float *A, float *B,
-                           float beta, float *C) {
+void runSgemm2DBlocktilingDmalt(int M, int N, int K, float alpha, float *A,
+                                float *B, float beta, float *C) {
   const uint BK = 8;
   const uint TM = 8;
   const uint TN = 8;
@@ -341,8 +389,8 @@ void runSgemmVectorize(int M, int N, int K, float alpha, float *A, float *B,
   }
 }
 
-void runSgemmVectorizeDmalt(int M, int N, int K, float alpha, float *A, float *B,
-                       float beta, float *C) {
+void runSgemmVectorizeDmalt(int M, int N, int K, float alpha, float *A,
+                            float *B, float beta, float *C) {
   const uint BK = 8;
   const uint TM = 8;
   const uint TN = 8;
@@ -389,8 +437,9 @@ void runSgemmResolveBankConflicts(int M, int N, int K, float alpha, float *A,
   }
 }
 
-void runSgemmResolveBankConflictsDmalt(int M, int N, int K, float alpha, float *A,
-                                  float *B, float beta, float *C) {
+void runSgemmResolveBankConflictsDmalt(int M, int N, int K, float alpha,
+                                       float *A, float *B, float beta,
+                                       float *C) {
   const uint BK = 8;
   const uint TM = 8;
   const uint TN = 8;
@@ -726,6 +775,15 @@ void run_kernel(int kernel_num, int M, int N, int K, float alpha, float *A,
     break;
   case 31:
     run_sgemm_shared_mem_block_nounroll_dmalt(M, N, K, alpha, A, B, beta, C);
+    break;
+  case 33:
+    alignment_experiment_33(M, N, K, alpha, A, B, beta, C);
+    break;
+  case 34:
+    alignment_experiment_34(M, N, K, alpha, A, B, beta, C);
+    break;
+  case 36:
+    alignment_experiment_36(M, N, K, alpha, A, B, beta, C);
     break;
   default:
     throw std::invalid_argument("Unknown kernel number");
