@@ -725,17 +725,17 @@ LG Throttle metric).
 #### Kernel 25: shared memory blocking
 
 For the next kernel the performance boost is significant: kernel duration drops
-from 451 ms to 322 ms. We also note from the Warp State Statistics that the
+from 451 ms to 323 ms. We also note from the Warp State Statistics that the
 limiting factor is not `Stall LG Throttle` anymore. Instead it's `Stall MIO
 Throttle` at 26.72 cycles (MIO is the pipeline concerning the shared memory among other things).
 Warp Cycles Per Issued Instruction also worsened to 41.36 cycles. But despite
 those metrics being worse, we see that the total number of instructions went
 down from 17.7G to 6G suggesting that we're doing less work now - almost 3-fold.
 
-The original Boehm's writeup suggests that the performance increase for this kernel
+The original Boehm's write-up suggests that the performance increase for this kernel
 should be attributed to the better data locality moving the matrices from global
 to the shared memory. We saw however that for kernel 23 most of the traffic from DRAM
-was already handled by the L1 cache, which runs on the same hardware as SMEM. Together
+was already handled by the L1-cache, which runs on the same hardware as SMEM. Together
 with worse Warp State metrics that hints that there might be more going on than mere
 data locality.
 
@@ -760,12 +760,16 @@ elements concurrently in a block and then reuse them in k25, as opposed to
 loading from DRAM on every cycle of the inner loop for k23, where we need the
 integer arithmetic to happen every time.
 
-Integer arithmetic however is not the bottleneck for this kernel. It relies on the
-ALU and FMA pipes, and we're being limited by the LG Throttle for k23 and MIO Throttle
-for k25. Both MIO and LG under the hood rely on the same hardware, namely the shared
-memory unit, since L1 cache also resides in the shared memory. So why do we see
-any performance gains at all, if we effectively have the same memory access pattern?
-The answer to that hides behind the `Memory Workload Analysis` stats:
+Integer arithmetic, however, is unlikely to be the bottleneck for k23. It
+relies on the ALU and FMA pipes, and we're being limited by the LG Throttle,
+while FMA and ALU pipelines are at 37% and 22.3% utilization for k23
+respectively. Additionally, Issued warp per scheduler for k23 is at 0.41, so
+the scheduler has empty slots to fit the integer instructions in if needed.
+
+Note, that both MIO and LG under the hood rely on the same hardware, since L1
+and shared memory are carved of the same SRAM. So why do we see any performance
+gains at all, if we effectively have the same memory access pattern? The answer
+to that hides behind the `Memory Workload Analysis` stats:
 
 ![K23 memory workload](./assets/k23_memory_workload.png)
 
@@ -884,15 +888,15 @@ LDG.E.SYS R19, [R18]
 ```
 
 It uses bare `LDG` -- the global memory instruction, which we know to be
-hitting `L1`. So no vectorized access. So the hypothesis is that using shared memory
-blocks enabled us make a better use of the vectorized memory access -- it has nothing to
-do with data locality. To demonstrate this, I've coded 2 versions of the same kernel that
-attempt to disrupt this memory access pattern by using the runtime version of
-`BLOCKSIZE` instead of the compile-time one, kernels 30 and 31:
+hitting `L1`. So no vectorized access. Is it possible that using shared
+memory blocks merely enabled a better use of the vectorized memory access --
+and has nothing to do with data locality? To check this, I've coded 2
+versions of the same kernel that attempt to disrupt the compiler optimizations
+by using the runtime version of `BLOCKSIZE` instead of the compile-time one,
+kernels 30 and 31:
 
 ```cpp
-// Kernel 30: full runtime geometry. `bs` replaces BLOCKSIZE everywhere, so the
-// index math becomes integer div/mod and the inner loop cannot be unrolled.
+// Kernel 30: full runtime geometry. `bs` replaces BLOCKSIZE everywhere
 __global__ void sgemm_shared_mem_block_runtime_dmalt(int M, int N, int K,
     float alpha, const float *A, const float *B, float beta, float *C, int bs) {
 
@@ -927,9 +931,8 @@ __global__ void sgemm_shared_mem_block_runtime_dmalt(int M, int N, int K,
   C[tRow * N + tCol] = alpha * acc + C[tRow * N + tCol] * beta;
 }
 
-// Kernel 31: identical to 25 EXCEPT the inner loop trip count comes from `bs`.
-// All index arithmetic stays compile-time. This isolates the unrolling effect
-// alone, with no integer div/mod and no runtime strides.
+// Kernel 31: identical to 25 except the inner loop trip count comes from `bs`.
+// All index arithmetic stays compile-time.
 template <const uint BLOCKSIZE>
 __global__ void sgemm_shared_mem_block_nounroll_dmalt(int M, int N, int K,
     float alpha, const float *A, const float *B, float beta, float *C, int bs) {
@@ -969,16 +972,18 @@ __global__ void sgemm_shared_mem_block_nounroll_dmalt(int M, int N, int K,
 The difference with k25 is that for k30 the `BLOCKSIZE` parameter is completely
 replaced by a runtime parameter `bs`, and for k31 `bs` replaces only the inner
 loop limit -- at this point Claude suggested that k25's performance gain might
-be related to full the unrolling of the inner loop, which would be hindered by
-the loop bound unknown at compile time.
+be related to the full unrolling of the inner loop, which would be hindered by
+the loop bound unknown at compile time. The latter proved to be the dead end, but
+k31 appeared to be interesting for a different reason.
 
 And the performance for the 2 kernels is: \[...drum roll\]
 
 - k30: 447ms
 - k31: 345ms.
 
-So replacing the `BLOCKSIZE` with a runtime variable puts the smem blocking kernel back
-to the k23's performance!
+So replacing the `BLOCKSIZE` with a runtime variable puts the SMEM blocking
+kernel back to the k23's performance, while having the same tiling
+structure and therefore the same data locality as k25!
 
 Let's take a look at the number of `SMEM` requests for these two kernels:
 
@@ -996,7 +1001,7 @@ the difference in the requests total.
 
 Another puzzling thing is that despite the number of requests to SMEM being
 significantly higher for k31 vs k25 (3.22 G vs 2.68 G) performance stays on
-par: 345 ms vs 322 ms. That was quite puzzling to me at first. I'm just gonna
+par: 345 ms vs 323 ms. That was quite puzzling to me at first. I'm just gonna
 give away the answer here: it's because both vectorization instructions result
 in the same amount of the shared memory wavefronts:
 
@@ -1020,6 +1025,118 @@ section: for k25, k30 and k31 I report `Shared Memory -> Shared Load` requests
 and wavefronts, while for k23 the numbers come from `L1/TEX Cache -> Global
 Load`, which should make provided what we already discussed.
 
+##### Vectorized loads and alignment
+
+One note on why introducing the runtime variable `bs` makes the compiler opt
+for the non-vectorized version. I assume that in order for compiler to know it
+can load array in a vectorized fashion, it needs two things:
+
+1. The elements of the array must be read contiguously
+2. the compiler must see at compile time that the wide load starts
+   on a suitable boundary: a multiple of 2 floats for `LDS.64` and of 4 floats
+   for `LDS.128`
+
+Now, let's take a closer look at the line, where the load instructions occur:
+
+```cpp
+acc += As[tRow * bs + i] * Bs[i * bs + tCol];
+```
+
+One thing we see is that `As` is indexed with its fastest index `i`
+contiguously, while for `Bs` we access the elements with the stride `bs` so
+condition 1 breaks here. This is why when vectorization does occur, it affects
+only `As`. Now to the second one: when `bs` is a runtime variable, compiler has
+no way to reason about elements' alignment, so it just uses the basic one-float
+`LDS`. At least in theory.
+
+If the theory is correct, we should see the drop in performance not only when
+the stride is a runtime variable, but also when it's a compile-time constant, but
+not a multiple of 2 (for `LDS.64`) or 4 (for `LDS.128`). To test this I constructed another version of k25, where the stride for `As` is controlled separately:
+
+```cpp
+  ...
+  __shared__ float As[BLOCKSIZE * STRIDE];
+  ...
+  for (int bkIdx = 0; bkIdx < K; bkIdx += BLOCKSIZE) {
+    As[tRow * STRIDE + tCol] = A[tRow * K + tCol];
+    Bs[tRow * BLOCKSIZE + tCol] = B[tRow * N + tCol];
+    __syncthreads();
+
+    A += BLOCKSIZE;
+    B += BLOCKSIZE * N;
+
+    for (int i = 0; i < BLOCKSIZE; i++) {
+      acc += As[tRow * STRIDE + i] * Bs[i * BLOCKSIZE + tCol];
+    }
+    __syncthreads();
+  }
+  ...
+```
+
+I've set the stride values to 33, 34 and 36 to check what would happen when
+the stride is odd, a multiple of 2 and a multiple of 4. The expectation is
+of course that we'd see `LDS`, `LDS.64` and `LDS.128` respectively in SASS.
+
+The durations of the three versions of this new kernel are below:
+
+|              |     |     |     |
+| ------------ | --- | --- | --- |
+| STRIDE       | 33  | 34  | 36  |
+| duration, ms | 430 | 338 | 329 |
+
+And the assembly code indeed matches the prediction: we see only `LDS` for `STRIDE=33`, `LDS.64` for `STRIDE=34` and `LDS.128` for `STRIDE=36`.
+
+As expected, the times fall into the same performance bins as their counterparts:
+
+|              |             |                |                 |
+| ------------ | ----------- | -------------- | --------------- |
+| kernel       | k30 (`LDS`) | k31 (`LDS.64`) | k25 (`LDS.128`) |
+| duration, ms | 447         | 345            | 323             |
+
+So we see that performance gains for k25 are most likely coming from a compiler
+memory optimization that occurred almost by chance and not for the reason the
+changes were introduced. In this particular case the mechanism is making the compiler see the elements are properly aligned for the vectorized loads.
+
+##### K25's conclusion
+
+What did I learn from this lengthy side-quest? I guess I can boil it down to
+the following:
+
+- Sometimes things can get randomly better
+- Looking at SASS alongside with the metrics can provide valuable insights into
+  the kernel's performance. And sometimes it's the only way.
+- Sometimes a better kernel means worse metrics, as we saw for the Warp State
+  Statistics for k25
+- Reasoning about the kernel performance just from the first principles is
+  hard and can be misleading, so verifying the assumptions with numbers is a must
+
+#### Kernel 26: 1D blocktiling
+
+Kernel duration improved to `145ms`. We also see much fewer requests to SMEM
+(805 306 368 for the Shared Load with 1 342 177 280 wavefronts).
+
+Instruction statistics for the first time show floating point operations as
+the most prominent type:
+
+![k26 instruction statistics](./assets/k26_instruction_stats.png)
+
+MIO throttle is still the leading cause of stall, but the metrics are much
+better: 6.02 cycles out of 15.68 cycles in total Warp Cycles Per Issued
+Instruction. It hints towards the next optimization: easing the shared memory load
+even further with 2D blocktiling.
+
+![k26 warp stalls](./assets/k26_warp_stalls.png)
+
+One note regarding Boehm's post: it's As that's loaded with `LDS.128`, not Bs.
+It also suggests that it's fine to read As non-contiguously in the inner loop:
+compiler recognizes that we read the whole BK \* TM chunk in two nested loops and
+optimizes the loads for us.
+
+Another notable thing is that occupancy dropped to 50% because of the registers
+limit. I tried increasing it back to 100% by compiling with `-maxregcount=64`,
+which indeed raised the occupancy, but the duration stayed roughly the same:
+147ms. Possibly what happens is we're still being limited by the shared memory,
+so adding more warps simply means longer queues.
 
 ## Notes
 
