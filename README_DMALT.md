@@ -1133,10 +1133,88 @@ compiler recognizes that we read the whole BK \* TM chunk in two nested loops an
 optimizes the loads for us.
 
 Another notable thing is that occupancy dropped to 50% because of the registers
-limit. I tried increasing it back to 100% by compiling with `-maxregcount=64`,
+limit. I tried increasing it back to 100% by compiling with `-maxrregcount=64`,
 which indeed raised the occupancy, but the duration stayed roughly the same:
 147ms. Possibly what happens is we're still being limited by the shared memory,
 so adding more warps simply means longer queues.
+
+#### Kernel 27: 2D blocktiling
+
+Nice 2x improvement on duration: 74.4ms.
+We also see much better arithmetic pipes utilization (blue: k27, green: k26):
+
+![k27 pipes utilization](./assets/k27_pipes.png)
+
+The warp stalls are significantly reduced, but MIO Throttle remains the main
+warp stalling factor:
+
+![k27 warp stalls](./assets/k27_warp_stalls.png)
+
+Interestingly, we now see bank conflicts on the shared load, which were not there before. We have 301 989 888 in total.
+
+We also see the increased utilization of L1 cache again: the hit rate for k27 sits at 18.8% vs 0.77% for k26.
+
+Shared memory requests are down to 167772160 (-79.17% vs k26) and the
+wavefronts - to 738197504 (-45.00% vs k26).
+
+Looking at SASS for the shared memory load instructions I see the mixture of
+`LDS` and `LDS.128` for this code below loading `As`:
+
+```cpp
+for (int iDot = 0; iDot < BK; ++iDot) {
+  for (int iTM = 0; iTM < TM; ++iTM) {
+    regTM[iTM] = As[(iTM + tRow * TM) * BK + iDot];
+  }
+  ...
+}
+```
+
+Something funky is going on there, but it seems like the
+data are already loaded with `LDS.128`. Likely, the compiler again is able
+to reason about both `iDot` and `iTM` loops at the same time and figure out
+the optimized memory access pattern.
+
+As expected, `Bs` loading loop (below) uses `LDS.128` everywhere. 'As expected' because the fast variable iterates over the contiguous bytes.
+
+```cpp
+for (int iTN = 0; iTN < TN; ++iTN) {
+  regTN[iTN] = Bs[iDot * BN + iTN + tCol * TN];
+}
+```
+
+#### Kernel 28: SMEM and GMEM vectorization
+
+- Kernel 28 is marginally faster: 69.3ms (-6.91%).
+- All of the load instructions for As are now vectorized to `LDS.128`.
+- The global loads turned from `LDG` to `LDG.128`, so that change took effect.
+- Number of requests to shared memory is down by 20%, of wavefronts - by 9%.
+- Bank conflicts for shared load are down by 11%, but the new 16777216 shared store conflicts were introduced.
+- Stall MIO throttle is down by 6% to 3.39.
+
+Looks like the main effect of this change is removing the rest of unvectorized
+load instructions for As loading. At least, the 6% reduction in MIO throttle
+correlates pretty well with the performance improvement.
+
+MIO stays the main stalling reason with the bank conflicts being the next most
+obvious thing for improvement.
+
+#### Kernel 29: bank conflicts
+
+- The duration is down by 12% to 60.62 ms
+- MIO throttle is down to 1.3 cycles and is no longer the main stalling reason.
+  It subsided to "Stall Not Selected" with 1.88 cycles out of 8 warp cycles per issued instruction
+- Shared load bank conflicts are gone
+- Shard store bank conflicts are up by 100% to 33554432
+- The number of Shared Memory Load requests is up by 150% to 335544320, but
+  the wavefronts number is actually down by 40%: 402653184. This attributes to
+  `Bs`'s shared load going back to using unvectorized `LDS` loads.
+- The ultimate limit we should hit for an optimal kernel is the FMA pipeline.
+  For k29 it's at 74.42% utilization, suggesting another 25% duration cut should
+  be theoretically possible.
+
+
+> [!NOTE]
+> "Stall Not Selected" means that the warp was ready, but another warp was selected instead. It's not really a stall. [Nvidia docs on this](https://docs.nvidia.com/nsight-compute/ProfilingGuide/index.html#warp-stall-reasons)
 
 ## Notes
 
@@ -1156,3 +1234,7 @@ Workload Analysis table) shows 41.24 GB/s_ 331 ms = 13.65 GB of DRAM vs 38.51
 GB/s\_ 460 ms = 17.71 GB for the coalescing kernel, so the DRAM traffic is
 indeed reduced, but not 32-fold -- only by 23%. The suspected reason that L1
 cache absorbs the hit in the coalescing kernel.
+
+```
+
+```
