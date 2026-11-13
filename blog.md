@@ -1,24 +1,24 @@
 # The what and why
 
-Recently I embarked on a journey of learning the inside-outs of the ML models
-machinery. One corner of it that especifically drew my attention is the CUDA
+Recently I embarked on a journey of learning the ins and outs of the ML models
+machinery. One corner of it that specifically drew my attention is the CUDA
 programming -- tooling that powers those fast matrix multiplications, that make
 the modern AI possible in the first place. And since I think the best way to
 learn a thing is to build it yourself, I decided to lockstep [Boehm's excellent
 worklog](https://siboehm.com/articles/22/CUDA-MMM) on coding a matrix
 multiplication kernel performing at about 94% of the CuBLAS.
 
-This post is my account of re-implementing large chunk of the ladder, but more in
+This post is my account of re-implementing a large chunk of the ladder, but more in
 the
 [analysis-driven](https://developer.nvidia.com/blog/analysis-driven-optimization-preparing-for-analysis-with-nvidia-nsight-compute-part-1/)
-fashion: I profile each intermediate kernel to see, if the numbers pave the
+fashion: I profile each intermediate kernel to see if the numbers pave the
 same path as the original worklog suggests, while learning the tooling in the process.
 
 In the end, I reach similar 94% of CuBLAS performance, albeit with a different
-kernel (makes sense, I uses T4 GPU vs Boehm's A6000). Most importantly though,
+kernel (makes sense, I use a T4 GPU vs Boehm's A6000). Most importantly though,
 using the profiler revealed that the textbook story about the data locality and
 optimizing the off-chip memory usage appears to be over-simplified and somewhat
-misleading: the L1 cache absorbst most of the hit for the DRAM access, and the
+misleading: the L1 cache absorbs most of the hit for the DRAM access, and the
 real story behind some of the performance gains actually involves the on-chip
 optimizations.
 
@@ -36,7 +36,7 @@ To climb the ladder I used the following setup:
 - Use Google Colab for the GPU access:
   - It's free
   - It adds the profiling information (not all platforms do)
-- The GPU is used on Colab is one of the default ones: Nvidia T4
+- The GPU I used on Colab is one of the default ones: Nvidia T4
 - For the profiling info analysis I used a split setup:
   - run the NCU profiler on the Colab cloud machine
   - download the profiler's reports
@@ -50,7 +50,7 @@ To climb the ladder I used the following setup:
 
 ### On the profiler setup
 
-Nvidia has an exellent profiler for analyzing the kernel's performance,
+Nvidia has an excellent profiler for analyzing the kernel's performance,
 [NCU](https://developer.nvidia.com/tools-overview/nsight-compute/get-started).
 It supports both a CLI and a graphical UI, and I leaned at first towards using the
 CLI for three reasons:
@@ -67,8 +67,8 @@ for someone who's learning:
   things like the baseline comparison, which allows you to compare the kernels
   among each other
 - with all the data gathered in one place and easy to navigate to it makes
-  discoverabilty much less of an issue, which is a huge deal for someone who's
-  learning what tools and techiniques are available for the first time.
+  discoverability much less of an issue, which is a huge deal for someone who's
+  learning what tools and techniques are available for the first time.
 
 Below is the code I used in the Colab notebook to run the profiler.
 
@@ -112,11 +112,11 @@ zip reports.zip k*_full.ncu-rep
 
 ## The naive kernel: diagnosing memory coalescing issues with sectors/request
 
-Running the naive kernel took 2.25 seconds on the T4 (Boehm's A6000 produced 0.5s for comparison) -- very slow, no suprises there. As explained by the original post,
+Running the naive kernel took 2.25 seconds on the T4 (Boehm's A6000 produced 0.5s for comparison) -- very slow, no surprises there. As explained by the original post,
 assuming zero caching we load 548 GB from DRAM. In addition, the access pattern
 for matrix `A` is not ideal: we load the elements that are placed in memory non-contiguously.
 
-Let's look at the metrics to see, if that explanation holds. Below is the table from the Speed Of Light section in NCU:
+Let's look at the metrics to see if that explanation holds. Below is the table from the Speed Of Light section in NCU:
 
 | Metric                      | Value | Metric                   |         Value |
 | --------------------------- | ----: | ------------------------ | ------------: |
@@ -135,16 +135,16 @@ Let's take a look at the Memory Chart from the 'Memory Workload Analysis' sectio
 
 ![Memory graph](./assets/21_naive_memory_graph.png)
 
-We see that the total hit rate for L1 is at 97.33%, so Most of the GMEM
+We see that the total hit rate for L1 is at 97.33%, so most of the GMEM
 accesses actually do get cached! Overall we load 18.13GB of traffic from GMEM
 to the on-chip memory, which is very significant, but nowhere near the
 potential 548 GB maximum.
 
-Another thing to notice is that the DRAM throughput of mere 0.96%. The global
+Another thing to notice is that the DRAM throughput is a mere 0.96%. The global
 memory pipeline is barely doing anything! It tells us that those 18GB of global
 memory traffic are not really the bottleneck.
 
-The answer hides in one of the NCU optimization suggestion:
+The answer hides in one of the NCU optimization suggestions:
 
 > On average, each warp of this workload spends 236.3 cycles being stalled
 > waiting for the L1 instruction queue for local and global (LG) memory
@@ -175,7 +175,7 @@ Analysis section, which reports utilization of the pipes, including LSU:
 
 ![k21 pipes](./assets/k21_pipes.png)
 
-It sits at mere 6.05%. Same number as we saw in the SOL table above for the
+It sits at a mere 6.05%. Same number as we saw in the SOL table above for the
 Compute Throughput. The reason being Compute Throughput is the aggregate metric - it
 reports maximum among several other metrics, which LSU is one of.
 
@@ -190,8 +190,8 @@ of stats in the L1/TEX Cache section. We're interested in the column called
 'sectors/request'. For the 'Global Load' section it reads '16.5'. This is very high!
 
 To see why, we need to understand what's a sector and how a good memory access
-pattern should look like. When we fetch the data on L1, the the access is
-structured in 32 bytes blocks (or 8 fp32 numbers), called sectors. Instructions
+pattern should look like. When we fetch the data on L1, the access is
+structured in 32-byte blocks (or 8 fp32 numbers), called sectors. Instructions
 to load the data from the memory are organized per-warp, so for 32 lanes in
 warp we are requesting 32 floating point numbers from L1. If these numbers are
 contiguous in memory, we would touch 4 sectors to access 32 numbers. If they
@@ -201,7 +201,7 @@ we touch a sector on L1, the whole sector gets moved. So in our case of average
 This is the manifestation of the uncoalesced memory access mentioned in the
 Boehm's longread.
 
-Let's see, where this number comes from. Here's how we multiply a row of A by a column
+Let's see where this number comes from. Here's how we multiply a row of A by a column
 of B:
 
 ```cpp
@@ -221,17 +221,17 @@ element, resulting in a broadcast access pattern: 1 sector/request. On average w
 get `(32 + 1)/2 = 16.5` sectors/request.
 
 So what happens is because of the uncoalesced memory access every request loading
-elements of matrix A touches 8x data it needs to causing every request to be slow,
+elements of matrix A touches 8x the data it needs, causing every request to be slow,
 hence the low LSU throughput clogging up everything downstream.
 
 Coming back to the L1/TEX cache throughput of 99.9%. It's also the aggregate metric
 and, to tie it back to the sectors/requests I looked into what it's composed of and
-what is the primary limiting one it can be done similar to this:
+what is the primary limiting one. It can be done similar to this:
 
 ```sh
 ncu --metrics breakdown:l1tex__throughput.avg.pct_of_peak_sustained_active \
     --kernel-name regex:sgemm_naive_dmalt --launch-count 1 \
-    ./sgemm 21
+    ./sgemm/build/sgemm 21
 ```
 
 The output I got was as follows:
@@ -253,7 +253,7 @@ So the actual metric that's at 99.9% is
 measures the LSU pipeline utilization inside the L1 unit. As you see, it all agrees
 with the LG Throttle we saw from the Warp State Statistics.
 
-Note that the metric mentions 'wavefronts'. Let's use this as excuse to define
+Note that the metric mentions 'wavefronts'. Let's use this as an excuse to define
 wavefronts here since they'll play an important role later.
 
 > Wavefront is a unique "work package" generated at the end of the processing
@@ -263,7 +263,7 @@ Importantly, when a warp generates a request, each request means at least one
 wavefront, but the opposite is not necessarily true -- one request can also
 translate into multiple wavefronts.
 
-Back to our busyness. To conclude, the detailed metrics-grounded breakdown of
+Back to our business. To conclude, the detailed metrics-grounded breakdown of
 what happens is as follows.
 
 - We try to load way too much from GMEM
@@ -274,8 +274,8 @@ what happens is as follows.
 - The wavefronts flood the LSU unit inside L1, causing the 99.9% utilization and
   very long warp stalls.
 
-Or at least I think that's what happens: some of things, like how sectors/requests translate
-into the wavefronts I can't directly ascertain.
+Or at least I think that's what happens: some of the things, like how sectors/requests translate
+into the wavefronts, I can't directly ascertain.
 
 ## The coalesced kernel: identifying L1 as the bottleneck with the warp state statistics
 
