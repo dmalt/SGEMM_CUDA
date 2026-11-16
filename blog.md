@@ -330,21 +330,57 @@ also look much better now:
 They all point to the same thing: the coalescing fix worked. The Global Loads now
 touch far fewer sectors per request on average, LSU unit on L1 is not choking anymore because of how heavy the requests are and we don't waste an absurd number of cycles on waiting for it in the warps scheduler. Good.
 
-However, L1's LSU is still the busiest part of the kernel, just not because
-of how slow each request is but, because of how many there are: the warp
-scheduler still stalls with that same LG Throttle.
-Note also the LSU utilization raising from 6.05% to 79.2%: it points to that
-same shift in the limiting factor for L1 from latency to the number of requests.
+However, L1's LSU is still the busiest part of the kernel, just not because of
+how slow each request is but because of how many there are: the warp scheduler
+still stalls with that same LG Throttle. Note also the LSU utilization raising
+from 6.05% to 79.2%: it points to that same shift in the limiting factor for L1
+from latency to the number of requests.
 
 We note also, that the hit rate for L1 is still very high at 94.98%, so most
-of the inefficiency of loading the from global memory is absorbed by the L1 cache.
+of the inefficiency of loading from global memory is absorbed by the L1 cache.
 
 ## Shared memory blocking: shifting the bottleneck how the intuition fails us
 
-- Global memory access patterns are not the issue
-- Looking into SASS
-- Experiments with breaking the compiler optimizations
-- Wavefronts vs requests significance for the kernel performance
+What Boehm does next in his post is laying out the global memory access textbook
+argument. He argues that since all our loads are to the global memory and
+global memory loads are awfully slow, we can make use of the fact that
+most of the data for SGEMM is being reused and preload the reused matrix blocks
+into SMEM.
+
+We saw however, that most of the data traffic is served from L1 cache, which is
+physically already located in the same place as SMEM. So preloading the data
+into the shared memory should bring about no performance improvement, right?
+
+Well, it still does! The shared memory blocking kernel is about 40% faster: the
+duration shrinks from 451.85ms to 323.16ms, so it's not insignificant. What the
+hell? Let's check the metrics.
+
+### Global memory access patterns are not the issue
+
+First, from the Warp State Statistics we see that the limiting factor is not
+`Stall LG Throttle` anymore. Instead it's `Stall MIO Throttle` at 26.72 cycles
+(MIO is the pipeline concerning the shared memory among other things). Warp
+Cycles Per Issued Instruction also worsened to 41.36 cycles. So for warps waiting
+on the shared memory we went from 10.4/19.52 to 26.72/41.36 cycles -- much worse!
+
+On the other hand, we see that the total number of instructions went down from
+17.7G to 6G suggesting that we're doing less work now - almost 3-fold.
+
+Looking at the Memory Workload charts for the coalesced kernel (k23) and the shared memory one (k25) we also see far fewer requests to the shared memory:
+
+![K23 memory workload](./assets/k23_memory_workload.png)
+
+![K25 memory workload](./assets/k25_memory_workload.png)
+
+We already know that L1 and Shared memory are effectively the same thing, and
+the number of requests went down from 4.3G to 2.68G. Provided that we already
+know that the global memory traffic is not the issue, that must be it!
+
+### Looking into SASS
+
+### Experiments with breaking the compiler optimizations
+
+### Wavefronts vs requests significance for the kernel performance
 
 ## 1D blocktiling: attacking the MIO throttle
 
