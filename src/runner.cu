@@ -1,9 +1,11 @@
 #include "kernels.cuh"
 #include "runner.cuh"
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <fstream>
 #include <iomanip>
+#include <stdexcept>
 
 float get_sec() {
   struct timeval time;
@@ -266,6 +268,45 @@ void alignment_experiment_36(int M, int N, int K, float alpha, float *A,
                        cudaFuncAttributePreferredSharedMemoryCarveout,
                        cudaSharedmemCarveoutMaxShared);
   alignment_experiment<32, 36>
+      <<<gridDim, blockDim>>>(M, N, K, alpha, A, B, beta, C);
+}
+
+void run_sgemm_coalesce_static_k_dmalt(int M, int N, int K, float alpha,
+                                       float *A, float *B, float beta,
+                                       float *C) {
+  if (K != 4096) {
+    throw std::invalid_argument("This kernel is compiled for K = 4096");
+  }
+  dim3 gridDim(CEIL_DIV(M, 32), CEIL_DIV(N, 32));
+  dim3 blockDim(32 * 32);
+  sgemm_coalesce_static_k_dmalt<32, 4096, false>
+      <<<gridDim, blockDim>>>(M, N, K, alpha, A, B, beta, C);
+}
+
+void run_sgemm_coalesce_static_k_aligned_dmalt(int M, int N, int K,
+                                               float alpha, float *A, float *B,
+                                               float beta, float *C) {
+  if (K != 4096) {
+    throw std::invalid_argument("This kernel is compiled for K = 4096");
+  }
+  if (reinterpret_cast<uintptr_t>(A) % 16 != 0) {
+    throw std::invalid_argument("This kernel needs A to be 16-byte aligned");
+  }
+  dim3 gridDim(CEIL_DIV(M, 32), CEIL_DIV(N, 32));
+  dim3 blockDim(32 * 32);
+  sgemm_coalesce_static_k_dmalt<32, 4096, true>
+      <<<gridDim, blockDim>>>(M, N, K, alpha, A, B, beta, C);
+}
+
+void run_sgemm_shared_mem_block_offset_dmalt(int M, int N, int K, float alpha,
+                                             float *A, float *B, float beta,
+                                             float *C) {
+  dim3 gridDim(CEIL_DIV(M, 32), CEIL_DIV(N, 32));
+  dim3 blockDim(32 * 32);
+  cudaFuncSetAttribute(sgemm_shared_mem_block_offset_dmalt<32, 1>,
+                       cudaFuncAttributePreferredSharedMemoryCarveout,
+                       cudaSharedmemCarveoutMaxShared);
+  sgemm_shared_mem_block_offset_dmalt<32, 1>
       <<<gridDim, blockDim>>>(M, N, K, alpha, A, B, beta, C);
 }
 
@@ -784,6 +825,15 @@ void run_kernel(int kernel_num, int M, int N, int K, float alpha, float *A,
     break;
   case 36:
     alignment_experiment_36(M, N, K, alpha, A, B, beta, C);
+    break;
+  case 37:
+    run_sgemm_coalesce_static_k_dmalt(M, N, K, alpha, A, B, beta, C);
+    break;
+  case 38:
+    run_sgemm_coalesce_static_k_aligned_dmalt(M, N, K, alpha, A, B, beta, C);
+    break;
+  case 39:
+    run_sgemm_shared_mem_block_offset_dmalt(M, N, K, alpha, A, B, beta, C);
     break;
   default:
     throw std::invalid_argument("Unknown kernel number");

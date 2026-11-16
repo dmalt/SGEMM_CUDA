@@ -124,42 +124,6 @@ __global__ void sgemm_shared_mem_block_dmalt(int M, int N, int K, float alpha,
   C[tRow * N + tCol] = alpha * acc + C[tRow * N + tCol] * beta;
 }
 
-template <const uint BLOCKSIZE, const uint STRIDE>
-__global__ void alignment_experiment(int M, int N, int K, float alpha,
-    const float *A, const float *B, float beta, float *C) {
-
-  // Rows of As are STRIDE floats apart; only the first BLOCKSIZE of each are used.
-  __shared__ float As[BLOCKSIZE * STRIDE];
-  __shared__ float Bs[BLOCKSIZE * BLOCKSIZE];
-
-  const uint bkRow = blockIdx.x;
-  const uint bkCol = blockIdx.y;
-
-  const uint tCol = threadIdx.x % BLOCKSIZE;  // thread column
-  const uint tRow = threadIdx.x / BLOCKSIZE;  // thread row
-
-  A += bkRow * BLOCKSIZE * K;
-  B += bkCol * BLOCKSIZE;
-  C += BLOCKSIZE * (bkRow * N + bkCol);
-
-  float acc = 0.0;
-  for (int bkIdx = 0; bkIdx < K; bkIdx += BLOCKSIZE) {
-    As[tRow * STRIDE + tCol] = A[tRow * K + tCol];
-    Bs[tRow * BLOCKSIZE + tCol] = B[tRow * N + tCol];
-    __syncthreads();
-
-    A += BLOCKSIZE;
-    B += BLOCKSIZE * N;
-
-    for (int i = 0; i < BLOCKSIZE; i++) {
-      acc += As[tRow * STRIDE + i] * Bs[i * BLOCKSIZE + tCol];
-    }
-    __syncthreads();
-
-  }
-  C[tRow * N + tCol] = alpha * acc + C[tRow * N + tCol] * beta;
-}
-
 
 template <const uint BM, const uint BN, const uint BK, const uint TM>
 __global__ void sgemm1DBlocktilingDmalt(int M, int N, int K, float alpha,
@@ -522,6 +486,102 @@ __global__ void sgemm_shared_mem_block_nounroll_dmalt(int M, int N, int K,
 
     for (int i = 0; i < bs; i++) {  // runtime trip count, everything else static
       acc += As[tRow * BLOCKSIZE + i] * Bs[i * BLOCKSIZE + tCol];
+    }
+    __syncthreads();
+
+  }
+  C[tRow * N + tCol] = alpha * acc + C[tRow * N + tCol] * beta;
+}
+template <const uint BLOCKSIZE, const uint STRIDE>
+__global__ void alignment_experiment(int M, int N, int K, float alpha,
+    const float *A, const float *B, float beta, float *C) {
+
+  // Rows of As are STRIDE floats apart; only the first BLOCKSIZE of each are used.
+  __shared__ float As[BLOCKSIZE * STRIDE];
+  __shared__ float Bs[BLOCKSIZE * BLOCKSIZE];
+
+  const uint bkRow = blockIdx.x;
+  const uint bkCol = blockIdx.y;
+
+  const uint tCol = threadIdx.x % BLOCKSIZE;  // thread column
+  const uint tRow = threadIdx.x / BLOCKSIZE;  // thread row
+
+  A += bkRow * BLOCKSIZE * K;
+  B += bkCol * BLOCKSIZE;
+  C += BLOCKSIZE * (bkRow * N + bkCol);
+
+  float acc = 0.0;
+  for (int bkIdx = 0; bkIdx < K; bkIdx += BLOCKSIZE) {
+    As[tRow * STRIDE + tCol] = A[tRow * K + tCol];
+    Bs[tRow * BLOCKSIZE + tCol] = B[tRow * N + tCol];
+    __syncthreads();
+
+    A += BLOCKSIZE;
+    B += BLOCKSIZE * N;
+
+    for (int i = 0; i < BLOCKSIZE; i++) {
+      acc += As[tRow * STRIDE + i] * Bs[i * BLOCKSIZE + tCol];
+    }
+    __syncthreads();
+
+  }
+  C[tRow * N + tCol] = alpha * acc + C[tRow * N + tCol] * beta;
+}
+
+
+
+// Coalesced kernel with the row length of A known at compile time (KDIM).
+// The launcher must pass K == KDIM. With ASSUME_ALIGNED the compiler is also
+// told that the pointer A is 16-byte aligned.
+template <const uint BLOCKSIZE, const uint KDIM, const bool ASSUME_ALIGNED>
+__global__ void sgemm_coalesce_static_k_dmalt(int M, int N, int K, float alpha,
+    const float *A, const float *B, float beta, float *C) {
+  const uint iRow = blockIdx.x * BLOCKSIZE + (threadIdx.x / BLOCKSIZE);
+  const uint iCol = blockIdx.y * BLOCKSIZE + (threadIdx.x % BLOCKSIZE);
+
+  if (ASSUME_ALIGNED) {
+    A = static_cast<const float *>(__builtin_assume_aligned(A, 16));
+  }
+
+  if (iRow < M && iCol < N) {
+    float acc = 0.0;
+    for (int i = 0; i < KDIM; i++) {
+      acc += A[iRow * KDIM + i] * B[i * N + iCol];
+    }
+    C[iRow * N + iCol] = alpha * acc + beta * C[iRow * N + iCol];
+  }
+}
+
+// Shared memory blocking with the rows of As starting OFFSET floats into the
+// array, so OFFSET = 1 puts every row 4 bytes past a 16-byte boundary.
+template <const uint BLOCKSIZE, const uint OFFSET>
+__global__ void sgemm_shared_mem_block_offset_dmalt(int M, int N, int K,
+    float alpha, const float *A, const float *B, float beta, float *C) {
+
+  __shared__ float As[BLOCKSIZE * BLOCKSIZE + OFFSET];
+  __shared__ float Bs[BLOCKSIZE * BLOCKSIZE];
+
+  const uint bkRow = blockIdx.x;
+  const uint bkCol = blockIdx.y;
+
+  const uint tCol = threadIdx.x % BLOCKSIZE;  // thread column
+  const uint tRow = threadIdx.x / BLOCKSIZE;  // thread row
+
+  A += bkRow * BLOCKSIZE * K;
+  B += bkCol * BLOCKSIZE;
+  C += BLOCKSIZE * (bkRow * N + bkCol);
+
+  float acc = 0.0;
+  for (int bkIdx = 0; bkIdx < K; bkIdx += BLOCKSIZE) {
+    As[OFFSET + tRow * BLOCKSIZE + tCol] = A[tRow * K + tCol];
+    Bs[tRow * BLOCKSIZE + tCol] = B[tRow * N + tCol];
+    __syncthreads();
+
+    A += BLOCKSIZE;
+    B += BLOCKSIZE * N;
+
+    for (int i = 0; i < BLOCKSIZE; i++) {
+      acc += As[OFFSET + tRow * BLOCKSIZE + i] * Bs[i * BLOCKSIZE + tCol];
     }
     __syncthreads();
 
