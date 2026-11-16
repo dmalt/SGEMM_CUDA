@@ -112,11 +112,14 @@ zip reports.zip k*_full.ncu-rep
 
 ## The naive kernel: diagnosing memory coalescing issues with sectors/request
 
-Running the naive kernel took 2.25 seconds on the T4 (Boehm's A6000 produced 0.5s for comparison) -- very slow, no surprises there. As explained by the original post,
-assuming zero caching we load 548 GB from DRAM. In addition, the access pattern
-for matrix `A` is not ideal: we load the elements that are placed in memory non-contiguously.
+Running the naive kernel took 2.25 seconds on the T4 (Boehm's A6000 produced
+0.5s for comparison) -- very slow, no surprises there. As explained by the
+original post, assuming zero caching we load 548 GB from DRAM. In addition, the
+access pattern for matrix `A` is not ideal: we load the elements that are
+placed in memory non-contiguously.
 
-Let's look at the metrics to see if that explanation holds. Below is the table from the Speed Of Light section in NCU:
+Let's look at the metrics to see if that explanation holds. Below is the table
+from the Speed Of Light section in NCU:
 
 | Metric                      | Value | Metric                   |         Value |
 | --------------------------- | ----: | ------------------------ | ------------: |
@@ -130,8 +133,9 @@ Note that the NCU-reported duration is much higher than 2.25 seconds coming
 from the Boehm's profiling harness. That's the effect of the mentioned
 profiling overhead.
 
-One thing that immediately catches the eye is that the kernel sits at 99.9% L1/TEX cache throughput.
-Let's take a look at the Memory Chart from the 'Memory Workload Analysis' section:
+One thing that immediately catches the eye is that the kernel sits at 99.9%
+L1/TEX cache throughput. Let's take a look at the Memory Chart from the 'Memory
+Workload Analysis' section:
 
 ![Memory graph](./assets/21_naive_memory_graph.png)
 
@@ -268,16 +272,72 @@ what happens is as follows.
 
 - We try to load way too much from GMEM
 - Most of the GMEM traffic gets cached in L1
-- However, we access the cached elements of matrix A in an uncoalesced manner.
+- We load the cached elements of matrix A on L1 in an uncoalesced manner.
 - This leads to a high number of sectors/request accessed.
 - This in turn generates an elevated number of wavefronts
-- The wavefronts flood the LSU unit inside L1, causing the 99.9% utilization and
-  very long warp stalls.
+- The wavefronts flood the LSU unit inside L1, causing the 99.9% utilization
+  and very long warp stalls.
 
-Or at least I think that's what happens: some of the things, like how sectors/requests translate
-into the wavefronts, I can't directly ascertain.
+Or at least I think that's what happens: some of the things, like how
+sectors/requests translate into the wavefronts, I can't directly ascertain.
 
 ## The coalesced kernel: identifying L1 as the bottleneck with the warp state statistics
+
+To mitigate the observed issues with the naive kernel, we swap `threadIdx.x` and `threadIdx.y` between what indexes rows and what columns of A;
+the rest of the kernel stays the same as the naive version:
+
+```cpp
+const uint iCol = blockIdx.x * blockDim.x + threadIdx.x;
+const uint iRow = blockIdx.y * blockDim.y + threadIdx.y;
+if (iRow < M && iCol < N) {
+  float acc = 0.0;
+  for (int i = 0; i < K; i++) {
+    acc += A[iRow * K + i] * B[i * N + iCol];
+  }
+  C[iRow * N + iCol] = alpha * acc + beta * C[iRow * N + iCol];
+}
+```
+
+> [!NOTE]
+> Boehm in his article does it differently: he uses
+> a single linear thread index `threadIdx.x` and manually wraps it
+> into a 2D structure with:
+> `const uint iCol = blockIdx.y * BLOCKSIZE + (threadIdx.x % BLOCKSIZE);`
+> `const uint iRow = blockIdx.x * BLOCKSIZE + (threadIdx.x / BLOCKSIZE);`
+> Our approach is equivalent. I just felt bare swapping is a more atomic next step.
+
+The point of swapping is that `threadIdx.x` is the 'fast' thread index,
+so when a warp is formed, it's assembled of threads with the adjacent values
+of `threadIdx.x`. So what swapping does for us is that threads in the same warp
+now load the same element of matrix A and different, but contiguous in memory
+elements of matrix B.
+
+After the fix we see more than a 13x improvement in the kernel duration: from
+6s to 451 ms (NCU times with overhead). The metrics that we observed earlier
+also look much better now:
+
+- SM Throughput: `6.05% -> 79.2%` (Bounded now by memory throughput, same `79.2%`)
+- DRAM Throughput: `0.96% -> 12.27%`
+- L1/TEX Cache Throughput: `99.9 % -> 79.35%`
+- Global Load Sectors/req: `16.5 -> 2.5`
+- Issued warp per scheduler: `0.03 -> 0.41`
+- Warp Cycles Per Issued Instruction: `250.39 -> 19.52 cycles`
+- Stall LG Throttle: `236 -> 10.4 cycles`
+- L1 <- L2 memory traffic: `60 -> 17 GB`
+- Compute Workload Analysis: FMA: `2.65 -> 37.14`
+- LSU pipe utilization: `6.05% -> 79.2%`
+
+They all point to the same thing: the coalescing fix worked. The Global Loads now
+touch far fewer sectors per request on average, LSU unit on L1 is not choking anymore because of how heavy the requests are and we don't waste an absurd number of cycles on waiting for it in the warps scheduler. Good.
+
+However, L1's LSU is still the busiest part of the kernel, just not because
+of how slow each request is but, because of how many there are: the warp
+scheduler still stalls with that same LG Throttle.
+Note also the LSU utilization raising from 6.05% to 79.2%: it points to that
+same shift in the limiting factor for L1 from latency to the number of requests.
+
+We note also, that the hit rate for L1 is still very high at 94.98%, so most
+of the inefficiency of loading the from global memory is absorbed by the L1 cache.
 
 ## Shared memory blocking: shifting the bottleneck how the intuition fails us
 
