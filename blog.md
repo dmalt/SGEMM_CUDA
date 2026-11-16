@@ -370,6 +370,8 @@ Looking at the Memory Workload charts for the coalesced kernel (k23) and the sha
 
 ![K23 memory workload](./assets/k23_memory_workload.png)
 
+---
+
 ![K25 memory workload](./assets/k25_memory_workload.png)
 
 We already know that L1 and Shared memory are effectively the same thing, and
@@ -377,6 +379,189 @@ the number of requests went down from 4.3G to 2.68G. Provided that we already
 know that the global memory traffic is not the issue, that must be it!
 
 ### Looking into SASS
+
+Let's try to calculate naively, how many SMEM requests our kernel needs for a
+`4096x4096` matrix multiplication. First, the inner loop is 4096 iterations,
+and inside we need to load elements of A and B, from L1 in case of k23 and from
+SMEM in case of k25. Then there are 4096^2 such loops, one per the output
+element, so `4096^3 * 2`, and that total must be divided by 32, since the
+requests are formed per warp. That gives `4096^3 * 2 / 32 = 4 294 967 296` -
+our 4.3 G for k23 up to a small delta. The same should be true for k25, but its
+number of requests is almost 2 times lower! Let's take this inner loop of the kernel
+
+```cpp
+...
+for (int i = 0; i < BLOCKSIZE; i++) {
+  acc += As[tRow * BLOCKSIZE + i] * Bs[i * BLOCKSIZE + tCol];
+}
+...
+```
+
+and see the SASS code that the compiler generated for it code for k25.
+The instructions below are grouped and annotated by Claude for readability, it's not the compiler's order. Note also that `BLOCKSIZE` we statically define in the
+code is 32.
+
+```asm
+// iterations 0-3
+LDS.U.128 R8, [R29]               // A[0..3] -> R8..R11
+LDS.U R30, [R0.X4+0x1000]         // B[0]
+FFMA R8, R30, R8, R31             // acc += A[0] * B[0]
+LDS.U R33, [R0.X4+0x1080]         // B[1]
+FFMA R9, R33, R9, R8              // acc += A[1] * B[1]
+LDS.U R34, [R0.X4+0x1100]         // B[2]
+FFMA R10, R34, R10, R9            // acc += A[2] * B[2]
+LDS.U R35, [R0.X4+0x1180]         // B[3]
+FFMA R11, R35, R11, R10           // acc += A[3] * B[3]
+
+// iterations 4-7
+LDS.U.128 R16, [R29+0x10]         // A[4..7] -> R16..R19
+LDS.U R37, [R0.X4+0x1200]         // B[4]
+FFMA R16, R37, R16, R11           // acc += A[4] * B[4]
+LDS.U R38, [R0.X4+0x1280]         // B[5]
+FFMA R17, R38, R17, R16           // acc += A[5] * B[5]
+LDS.U R39, [R0.X4+0x1300]         // B[6]
+FFMA R18, R39, R18, R17           // acc += A[6] * B[6]
+LDS.U R40, [R0.X4+0x1380]         // B[7]
+FFMA R19, R40, R19, R18           // acc += A[7] * B[7]
+
+// iterations 8-11
+LDS.U.128 R12, [R29+0x20]         // A[8..11] -> R12..R15
+LDS.U R41, [R0.X4+0x1400]         // B[8]
+FFMA R12, R41, R12, R19           // acc += A[8] * B[8]
+LDS.U R32, [R0.X4+0x1480]         // B[9]
+FFMA R13, R32, R13, R12           // acc += A[9] * B[9]
+LDS.U R42, [R0.X4+0x1500]         // B[10]
+FFMA R13, R42, R14, R13           // acc += A[10] * B[10]
+LDS.U R30, [R0.X4+0x1580]         // B[11]
+FFMA R13, R30, R15, R13           // acc += A[11] * B[11]
+
+// iterations 12-15
+LDS.U.128 R4, [R29+0x30]          // A[12..15] -> R4..R7
+LDS.U R31, [R0.X4+0x1600]         // B[12]
+FFMA R4, R31, R4, R13             // acc += A[12] * B[12]
+LDS.U R36, [R0.X4+0x1680]         // B[13]
+FFMA R5, R36, R5, R4              // acc += A[13] * B[13]
+LDS.U R37, [R0.X4+0x1700]         // B[14]
+FFMA R5, R37, R6, R5              // acc += A[14] * B[14]
+LDS.U R34, [R0.X4+0x1780]         // B[15]
+FFMA R5, R34, R7, R5              // acc += A[15] * B[15]
+
+// iterations 16-19
+LDS.U.128 R8, [R29+0x40]          // A[16..19] -> R8..R11
+LDS.U R33, [R0.X4+0x1800]         // B[16]
+FFMA R5, R33, R8, R5              // acc += A[16] * B[16]
+LDS.U R38, [R0.X4+0x1880]         // B[17]
+FFMA R5, R38, R9, R5              // acc += A[17] * B[17]
+LDS.U R39, [R0.X4+0x1900]         // B[18]
+FFMA R10, R39, R10, R5            // acc += A[18] * B[18]
+LDS.U R32, [R0.X4+0x1980]         // B[19]
+FFMA R10, R32, R11, R10           // acc += A[19] * B[19]
+
+// iterations 20-23
+LDS.U.128 R16, [R29+0x50]         // A[20..23] -> R16..R19
+LDS.U R35, [R0.X4+0x1a00]         // B[20]
+FFMA R10, R35, R16, R10           // acc += A[20] * B[20]
+LDS.U R30, [R0.X4+0x1a80]         // B[21]
+FFMA R17, R30, R17, R10           // acc += A[21] * B[21]
+LDS.U R31, [R0.X4+0x1b00]         // B[22]
+FFMA R18, R31, R18, R17           // acc += A[22] * B[22]
+LDS.U R36, [R0.X4+0x1b80]         // B[23]
+FFMA R19, R36, R19, R18           // acc += A[23] * B[23]
+
+// iterations 24-27
+LDS.U.128 R12, [R29+0x60]         // A[24..27] -> R12..R15
+LDS.U R37, [R0.X4+0x1c00]         // B[24]
+FFMA R12, R37, R12, R19           // acc += A[24] * B[24]
+LDS.U R34, [R0.X4+0x1c80]         // B[25]
+FFMA R13, R34, R13, R12           // acc += A[25] * B[25]
+LDS.U R8, [R0.X4+0x1d00]          // B[26]
+FFMA R8, R8, R14, R13             // acc += A[26] * B[26]
+LDS.U R9, [R0.X4+0x1d80]          // B[27]
+FFMA R9, R9, R15, R8              // acc += A[27] * B[27]
+
+// iterations 28-31
+LDS.U.128 R4, [R29+0x70]          // A[28..31] -> R4..R7
+LDS.U R33, [R0.X4+0x1e00]         // B[28]
+FFMA R4, R33, R4, R9              // acc += A[28] * B[28]
+LDS.U R11, [R0.X4+0x1e80]         // B[29]
+FFMA R5, R11, R5, R4              // acc += A[29] * B[29]
+LDS.U R16, [R0.X4+0x1f00]         // B[30]
+FFMA R6, R16, R6, R5              // acc += A[30] * B[30]
+LDS.U R10, [R0.X4+0x1f80]         // B[31]
+FFMA R31, R10, R7, R6             // acc += A[31] * B[31]
+```
+
+So, two things to notice. First, compiler uses the static `BLOCKSIZE=32`
+knowledge and fully unroll the loop. Second and most importantly, it uses the
+vectorized `LDS.U.128` instructions to load 4 elements of A with one
+instruction! That's new!
+
+For comparison, here's the same SASS piece for k23:
+
+```asm
+IMAD.MOV.U32 R19, RZ, RZ, 0x4                // R19 = 4 (bytes per float)
+
+// iteration i
+IADD3 R4, R24, -0x3, RZ                      // index of A[i]
+IMAD.WIDE.U32 R4, R4, R19, c[0x0][0x170]     // address = index * 4 + A (64-bit)
+LDG.E.SYS R4, [R4]                           // A[i]
+IMAD.WIDE.U32 R6, R28, R19, c[0x0][0x178]    // address = index * 4 + B (64-bit)
+LDG.E.SYS R7, [R6]                           // B[i]
+FFMA R4, R7, R4, R2                          // acc += A[i] * B[i]
+
+// iteration i+1
+IADD3 R8, R24, -0x2, RZ                      // index of A[i+1]
+IMAD.WIDE.U32 R8, R8, R19, c[0x0][0x170]
+LDG.E.SYS R8, [R8]                           // A[i+1]
+IMAD.WIDE.U32 R10, R25, R19, c[0x0][0x178]
+LDG.E.SYS R11, [R10]                         // B[i+1]
+FFMA R4, R11, R8, R4                         // acc += A[i+1] * B[i+1]
+
+// iteration i+2
+IADD3 R12, R24, -0x1, RZ                     // index of A[i+2]
+IMAD.WIDE.U32 R12, R12, R19, c[0x0][0x170]
+LDG.E.SYS R12, [R12]                         // A[i+2]
+IMAD.WIDE.U32 R14, R26, R19, c[0x0][0x178]
+LDG.E.SYS R15, [R14]                         // B[i+2]
+FFMA R4, R15, R12, R4                        // acc += A[i+2] * B[i+2]
+
+// iteration i+3
+IMAD.WIDE.U32 R16, R24, R19, c[0x0][0x170]
+LDG.E.SYS R16, [R16]                         // A[i+3]
+IMAD.WIDE.U32 R18, R27, R19, c[0x0][0x178]
+LDG.E.SYS R19, [R18]                         // B[i+3]
+
+// advance the indices and test the loop condition
+IADD3 R23, R23, 0x4, RZ                      // loop counter += 4
+IADD3 R24, R24, 0x4, RZ                      // A index += 4
+IMAD R28, R29, 0x4, R28                      // B indices += 4 * R29
+IMAD R25, R29, 0x4, R25
+LEA R26, R29, R26, 0x2
+LEA R27, R29, R27, 0x2
+IADD3 R2, R30, R23, RZ                       // R2 is free here: reused for the loop test
+ISETP.NE.AND P1, PT, R2, RZ, PT
+
+// iteration i+3, continued
+FFMA R2, R19, R16, R4                        // acc += A[i+3] * B[i+3]
+@P1  BRA `(.L_x_2) 0x78526f25fb30            // back to iteration i
+
+// remainder loop: one iteration per pass, for the leftover iterations
+@!P0 BRA `(.L_x_0) 0x78526f25fe30
+IMAD R20, R23, c[0x0][0x164], R20
+IMAD R23, R3, c[0x0][0x168], R23
+IMAD.IADD R20, R21, 0x1, R20
+MOV R6, 0x4
+IMAD.WIDE.U32 R4, R23, R6, c[0x0][0x170]
+IMAD.WIDE.U32 R6, R20, R6, c[0x0][0x178]
+LDG.E.SYS R4, [R4]                           // A[i]
+LDG.E.SYS R7, [R6]                           // B[i]
+IADD3 R22, R22, -0x1, RZ
+IADD3 R23, R23, 0x1, RZ
+ISETP.NE.AND P0, PT, R22, RZ, PT
+IADD3 R20, R20, c[0x0][0x164], RZ
+FFMA R2, R7, R4, R2                          // acc += A[i] * B[i]
+```
+
 
 ### Experiments with breaking the compiler optimizations
 
