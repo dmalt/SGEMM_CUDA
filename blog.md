@@ -342,7 +342,7 @@ from latency to the number of requests.
 We note also, that the hit rate for L1 is still very high at 94.98%, so most
 of the inefficiency of loading from global memory is absorbed by the L1 cache.
 
-## Shared memory blocking: shifting the bottleneck how the intuition fails us
+## Shared memory blocking: shifting the bottleneck and how the intuition fails us
 
 What Boehm does next in his post is laying out the global memory access textbook
 argument. He argues that since all our loads are to the global memory and
