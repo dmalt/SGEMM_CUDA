@@ -369,7 +369,8 @@ on the shared memory we went from 10.4/19.52 to 26.72/41.36 cycles -- much worse
 On the other hand, we see that the total number of instructions went down from
 17.7G to 6G suggesting that we're doing less work now - almost 3-fold.
 
-Looking at the Memory Workload charts for the coalesced kernel (k23) and the shared memory one (k25) we also see far fewer requests to the shared memory:
+Looking at the Memory Workload charts for the coalesced kernel (k23) and the
+shared memory one (k25) we also see far fewer requests to the shared memory:
 
 ![K23 memory workload](./assets/k23_memory_workload.png)
 
@@ -829,12 +830,48 @@ What did we learn from this deep dive? I guess I can boil it down to the followi
    rows are aligned.
 2. Looking at SASS alongside the metrics can provide valuable insights into the
    kernel's performance. And sometimes it's the only way.
-3. Sometimes a better kernel means worse metrics, as we saw for the Warp State
-   Statistics for k25.
+3. Sometimes a better kernel means worse metrics. The kernel stalls about 2x
+   longer per instruction (41.36 vs 19.52 cycles) but executes about 3x fewer
+   instructions (6G vs 17.7G), which nets out to the 1.4x speedup.
 
-## 1D blocktiling: attacking the MIO throttle
+## 1D blocktiling: attacking the MIO
 
+We saw that shared memory pipeline (MIO) is still the main stall reason for
+k25. The next kernel's optimization is pointed directly at this: we increase
+the arithmetic intensity of the kernel by going from computing a single output
+element per thread to computing multiple. This should reduce the pressure on
+the shared memory due to the better data reuse: every element loaded from SMEM
+now feeds several FMAs instead of one.
 
+And that indeed holds!
+Kernel duration improved to 145 ms. We also see far fewer requests to SMEM
+(805 306 368 for the Shared Load with 1 342 177 280 wavefronts).
+
+Instruction statistics for the first time show floating point operations as
+the most prominent type:
+
+![k26 instruction statistics](./assets/k26_instruction_stats.png)
+
+MIO throttle is still the leading cause of stalls, but the metrics are much
+better: 6.02 cycles out of 15.68 cycles in total Warp Cycles Per Issued
+Instruction. It hints towards the next optimization: easing the shared memory load
+even further with 2D blocktiling.
+
+![k26 warp stalls](./assets/k26_warp_stalls.png)
+
+> [!NOTE]
+> In his post Boehm suggests that `Bs` is loaded with `LDS.128`
+> instruction. That's a mixup! In reality it's As that's wide-loaded, as we saw
+> before when we zoomed in on k25's performance and SASS. It also suggests that
+> it's fine to read As non-contiguously in the inner loop: compiler recognizes
+> that we read the whole BK \* TM chunk in two nested loops and optimizes the
+> loads for us.
+
+Another notable thing is that occupancy dropped to 50% because of the registers
+limit. I tried increasing it back to 100% by compiling with `-maxrregcount=64`,
+which indeed raised the occupancy, but the duration stayed roughly the same:
+147 ms. Possibly what happens is we're still being limited by the shared memory,
+so adding more warps simply means longer queues.
 
 ## 2D blocktiling: performance gains and bank conflicts
 
