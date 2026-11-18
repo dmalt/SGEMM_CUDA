@@ -283,7 +283,8 @@ sectors/requests translate into the wavefronts, I can't directly ascertain.
 
 ## The coalesced kernel: identifying L1 as the bottleneck with the warp state statistics
 
-To mitigate the observed issues with the naive kernel, we swap `threadIdx.x` and `threadIdx.y` between what indexes rows and what columns of A;
+To mitigate the observed issues with the naive kernel, we swap `threadIdx.x`
+and `threadIdx.y` between what indexes rows and what columns of A;
 the rest of the kernel stays the same as the naive version:
 
 ```cpp
@@ -328,7 +329,9 @@ also look much better now:
 - LSU pipe utilization: `6.05% -> 79.2%`
 
 They all point to the same thing: the coalescing fix worked. The Global Loads now
-touch far fewer sectors per request on average, LSU unit on L1 is not choking anymore because of how heavy the requests are and we don't waste an absurd number of cycles on waiting for it in the warps scheduler. Good.
+touch far fewer sectors per request on average, LSU unit on L1 is not choking
+anymore because of how heavy the requests are and we don't waste an absurd
+number of cycles on waiting for it in the warps scheduler. Good.
 
 However, L1's LSU is still the busiest part of the kernel, just not because of
 how slow each request is but because of how many there are: the warp scheduler
@@ -378,12 +381,12 @@ We already know that L1 and Shared memory are effectively the same thing, and
 the number of requests went down from 4.3G to 2.68G. Provided that we already
 know that the global memory traffic is not the issue, that must be it!
 
-### Looking into SASS
+### Diagnosing the SMEM instructions shrink with SASS
 
 Let's try to calculate naively, how many SMEM requests our kernel needs for a
 `4096x4096` matrix multiplication. First, the inner loop is 4096 iterations,
 and inside we need to load elements of A and B, from L1 in case of k23 and from
-SMEM in case of k25. Then there are 4096^2 such loops, one per the output
+SMEM in case of k25. Then there are `4096^2` such loops, one per the output
 element, so `4096^3 * 2`, and that total must be divided by 32, since the
 requests are formed per warp. That gives `4096^3 * 2 / 32 = 4 294 967 296` -
 our 4.3 G for k23 up to a small delta. The same should be true for k25, but its
@@ -397,9 +400,10 @@ for (int i = 0; i < BLOCKSIZE; i++) {
 ...
 ```
 
-and see the SASS code that the compiler generated for it code for k25.
-The instructions below are grouped and annotated by Claude for readability, it's not the compiler's order. Note also that `BLOCKSIZE` we statically define in the
-code is 32.
+and see the SASS code that the compiler generated for it in k25. The
+instructions below are grouped and annotated by Claude for readability, it's
+not the compiler's order. Note also that `BLOCKSIZE` we statically define in
+the code is 32.
 
 ```asm
 // iterations 0-3
@@ -492,9 +496,9 @@ FFMA R31, R10, R7, R6             // acc += A[31] * B[31]
 ```
 
 So, two things to notice. First, compiler uses the static `BLOCKSIZE=32`
-knowledge and fully unroll the loop. Second and most importantly, it uses the
+knowledge and fully unrolls the loop. Second and most importantly, it uses the
 vectorized `LDS.U.128` instructions to load 4 elements of A with one
-instruction! That's new!
+instruction. That's new!
 
 For comparison, here's the same SASS piece for k23:
 
@@ -562,12 +566,275 @@ IADD3 R20, R20, c[0x0][0x164], RZ
 FFMA R2, R7, R4, R2                          // acc += A[i] * B[i]
 ```
 
+So, no vectorized `LDG.128` loads for k23, only the bare `LDG`s. Is it possible
+that using shared memory blocks merely enabled a better use of the vectorized
+memory access -- and has nothing to do with data locality?
+
+> [!NOTE]
+> `LDG` is a global memory load instruction and we compare it against the
+> k25's `LDS`, which is for SMEM, but here it doesn't matter,
+> since as we know those `LDG`s hit the L1 cache anyways.
 
 ### Experiments with breaking the compiler optimizations
 
-### Wavefronts vs requests significance for the kernel performance
+Let's take a look at the code for k25:
+
+```cpp
+template <const uint BLOCKSIZE>
+__global__ void sgemm_shared_mem_block_dmalt(int M, int N, int K, float alpha,
+    const float *A, const float *B, float beta, float *C) {
+
+  __shared__ float As[BLOCKSIZE * BLOCKSIZE];
+  __shared__ float Bs[BLOCKSIZE * BLOCKSIZE];
+
+  const uint bkRow = blockIdx.x;
+  const uint bkCol = blockIdx.y;
+
+  const uint tCol = threadIdx.x % BLOCKSIZE;  // thread column
+  const uint tRow = threadIdx.x / BLOCKSIZE;  // thread row
+
+  A += bkRow * BLOCKSIZE * K;
+  B += bkCol * BLOCKSIZE;
+  C += BLOCKSIZE * (bkRow * N + bkCol);
+
+  float acc = 0.0;
+  for (int bkIdx = 0; bkIdx < K; bkIdx += BLOCKSIZE) {
+    As[tRow * BLOCKSIZE + tCol] = A[tRow * K + tCol];
+    Bs[tRow * BLOCKSIZE + tCol] = B[tRow * N + tCol];
+    __syncthreads();
+
+    A += BLOCKSIZE;
+    B += BLOCKSIZE * N;
+
+    for (int i = 0; i < BLOCKSIZE; i++) {
+      acc += As[tRow * BLOCKSIZE + i] * Bs[i * BLOCKSIZE + tCol];
+    }
+    __syncthreads();
+
+  }
+  C[tRow * N + tCol] = alpha * acc + C[tRow * N + tCol] * beta;
+}
+```
+
+We saw above that for the line `acc += As[tRow * BLOCKSIZE + i] * Bs[i *
+BLOCKSIZE + tCol];` when accessing `As[tRow * BLOCKSIZE + i]` the compiler
+issues those `LDS.128` instructions. This was not happening before when loading
+the elements of `A` from GMEM via L1 cache. What enabled it now? It is
+`BLOCKSIZE` being a compile-time constant and set nicely to 32! Let's see why.
+
+Vectorized loads only work with memory-aligned data and the
+compiler needs to be able to prove that such alignment takes place.
+Technically, the requirement is spelled out in [Nvidia CUDA C++
+guide](https://docs.nvidia.com/cuda/archive/13.0.0/cuda-c-programming-guide/index.html#device-memory-accesses)
+
+> Global memory instructions support reading or writing words of size equal to
+> 1, 2, 4, 8, or 16 bytes. Any access (via a variable or a pointer) to data
+> residing in global memory compiles to a single global memory instruction if
+> and only if the size of the data type is 1, 2, 4, 8, or 16 bytes and the data
+> is naturally aligned (i.e., its address is a multiple of that size).
+
+(There's no similar passage regarding the shared memory access, but I believe
+it's safe to assume the same holds for SMEM.)
+
+So, in order for the compiler to read four fp32 elements of As (or A), `tRow *
+BLOCKSIZE + i, tRow * BLOCKSIZE + i + 1, tRow * BLOCKSIZE + i + 2,  tRow *
+BLOCKSIZE + i + 3` as 16 bytes at once, the compiler needs each of the
+underlying addresses to be a multiple of 16. Note, that row matrix `tRow` is
+generally different between threads, so each thread reads a row of As
+independently. Any address can be represented as `base + offset`. The offset
+here would be the index into array: `tRow * BLOCKSIZE + i`. So what we really
+have is the condition `(base + sizeof(float) * (tRow * BLOCKSIZE + 4 * j)) % 16
+== 0` with `sizeof(float) = 4 bytes`, and the 4 appearing in `4 * j` because we
+only need to consider alignment on the first element in the set of 4.
+It's not hard to see that this will hold only when both the `base`
+address is a multiple of 16 and `BLOCKSIZE` is a multiple of 4.
+
+The `base` address is usually aligned without any extra effort on our part. For
+instance, SMEM has its own address space for each thread block, so the
+addressing naturally starts at 0x0. For GMEM it's more tricky, but the
+alignment should be guaranteed by `cudaMalloc`.
+
+Finally, the compiler must know the bytes are aligned at compile time, hence
+the importance of defining `BLOCKSIZE` as a compile-time constant.
+
+This is all in theory. To check how it works in practice, I've coded 2
+versions of the same kernel that attempt to disrupt the compiler's
+optimizations by using the runtime version of `BLOCKSIZE` instead of the
+compile-time one, kernels 30 and 31.
+
+The difference with k25 is that for k30 the `BLOCKSIZE` parameter is completely
+replaced by a runtime parameter `bs`, and for k31 `bs` replaces only the inner
+loop limit -- at this point Claude suggested that k25's performance gain might
+be related to the full unrolling of the inner loop, which would be hindered by
+the loop bound unknown at compile time. The latter proved to be a dead end, but
+k31 appeared to be interesting for a different reason.
+
+```cpp
+// Kernel 30: full runtime geometry. `bs` replaces BLOCKSIZE everywhere
+__global__ void sgemm_shared_mem_block_runtime_dmalt(int M, int N, int K,
+    float alpha, const float *A, const float *B,
+    float beta, float *C, int bs) {    // <===
+
+  __shared__ float As[32 * 32];
+  __shared__ float Bs[32 * 32];
+
+  const uint bkRow = blockIdx.x;
+  const uint bkCol = blockIdx.y;
+
+  const uint tCol = threadIdx.x % bs;                // <===
+  const uint tRow = threadIdx.x / bs;                // <===
+
+  A += bkRow * bs * K;                               // <===
+  B += bkCol * bs;                                   // <===
+  C += bs * (bkRow * N + bkCol);                     // <===
+
+  float acc = 0.0;
+  for (int bkIdx = 0; bkIdx < K; bkIdx += bs) {      // <===
+    As[tRow * bs + tCol] = A[tRow * K + tCol];       // <===
+    Bs[tRow * bs + tCol] = B[tRow * N + tCol];       // <===
+    __syncthreads();
+
+    A += bs;                                         // <===
+    B += bs * N;                                     // <===
+
+    for (int i = 0; i < bs; i++) {                   // <===
+      acc += As[tRow * bs + i] * Bs[i * bs + tCol];  // <===
+    }
+    __syncthreads();
+
+  }
+  C[tRow * N + tCol] = alpha * acc + C[tRow * N + tCol] * beta;
+}
+
+// Kernel 31: identical to 25 except the inner loop trip count comes from `bs`.
+template <const uint BLOCKSIZE>
+__global__ void sgemm_shared_mem_block_nounroll_dmalt(int M, int N, int K,
+    float alpha, const float *A, const float *B, float beta, float *C, int bs) {
+
+  __shared__ float As[BLOCKSIZE * BLOCKSIZE];
+  __shared__ float Bs[BLOCKSIZE * BLOCKSIZE];
+
+  const uint bkRow = blockIdx.x;
+  const uint bkCol = blockIdx.y;
+
+  const uint tCol = threadIdx.x % BLOCKSIZE;
+  const uint tRow = threadIdx.x / BLOCKSIZE;
+
+  A += bkRow * BLOCKSIZE * K;
+  B += bkCol * BLOCKSIZE;
+  C += BLOCKSIZE * (bkRow * N + bkCol);
+
+  float acc = 0.0;
+  for (int bkIdx = 0; bkIdx < K; bkIdx += BLOCKSIZE) {
+    As[tRow * BLOCKSIZE + tCol] = A[tRow * K + tCol];
+    Bs[tRow * BLOCKSIZE + tCol] = B[tRow * N + tCol];
+    __syncthreads();
+
+    A += BLOCKSIZE;
+    B += BLOCKSIZE * N;
+
+    for (int i = 0; i < bs; i++) {                                  // <===
+      acc += As[tRow * BLOCKSIZE + i] * Bs[i * BLOCKSIZE + tCol];
+    }
+    __syncthreads();
+
+  }
+  C[tRow * N + tCol] = alpha * acc + C[tRow * N + tCol] * beta;
+}
+```
+
+So what's the performance for these two kernels? A reminder: k25 was at 323 ms.
+
+- k30: 447 ms
+- k31: 345 ms
+
+So replacing the `BLOCKSIZE` with a runtime variable puts the SMEM blocking
+kernel back to the k23's performance, while having the same tiling
+structure and therefore the same data locality as k25!
+
+Let's take a look at the number of `SMEM` requests for these two kernels:
+
+- k30: 4.29 G
+- k31: 3.22 G
+
+So k30 is back to 2 requests/iteration -- no vectorization (confirmed by its SASS).
+But k31 is weird: some vectorization is there, but it's not the same as k25. SASS sheds
+light on it:
+
+<!-- ![K31 inner loop SASS](./assets/k31_sass.png) -->
+
+So it uses `LDS.U.64` instructions! Why not `LDS.U.128`? I don't know. But that explains
+the difference in the requests total.
+
+##### A misaligned `As` row breaks vectorization
+
+To nail down the alignment assumption, I ran 3 more versions of k25,
+changing the size of `As` so that its number of columns is not such a nice
+power of 2 as `BLOCKSIZE`, to see if it breaks things as expected.
+The used values are:
+
+- `STRIDE=33` -- an odd number, should completely break alignment
+- `STRIDE=34` -- even number, but not a multiple of 4 -- `LDS.128` shouldn't be
+  possible, but `LDS.64` still should.
+- `STRIDE=36` -- a multiple of 4, but not a power of 2 as in the original.
+  To exclude any power of 2 magic.
+
+|                       |       |          |           |
+| --------------------- | ----- | -------- | --------- |
+| `As` STRIDE           | 33    | 34       | 36        |
+| duration, ms          | 430   | 338      | 329       |
+| `As` load instruction | `LDS` | `LDS.64` | `LDS.128` |
+
+As expected, the times fell into the same performance bins as their counterparts:
+
+|              |             |                |                 |
+| ------------ | ----------- | -------------- | --------------- |
+| kernel       | k30 (`LDS`) | k31 (`LDS.64`) | k25 (`LDS.128`) |
+| duration, ms | 447         | 345            | 323             |
+
+---
+
+Another puzzling thing is that despite the number of requests to SMEM being
+significantly higher for k31 vs k25 (3.22 G vs 2.68 G) performance stays roughly on
+par: 345 ms vs 323 ms. How can this be? The reason is that requests
+don't necessarily measure the same amount of work. This is where the concept
+of a wavefront comes in handy again. Let's dig into the 'Memory Workload
+Analysis/Memory tables' section to see how many wavefronts those requests generated
+for our kernels:
+
+| kernel | Requests   | Wavefronts |
+| ------ | ---------- | ---------- |
+| k23    | 4295491584 | 4295491584 |
+| k25    | 2684354560 | 3221225472 |
+| k30    | 4294967296 | 4294967296 |
+| k31    | 3221225472 | 3221225472 |
+
+(k23 - global loads, k25, k30 and k31 - shared loads).
+
+So we see that k25 is the only kernel for which the number of requests doesn't
+match the number of wavefronts. Likely, what happens here is that `LDS.U.128`
+is translated into 2 wavefronts, while `LDS.U.64` - into 1. Using the same
+arithmetic, but with 1.25 and 1.5 LDS/iteration instead of 2 we get exactly
+2.68 G and 3.22 G requests. Note that the wavefronts number matches the
+kernels' performance: k25 is on par with k31, while k23 is similar to k30.
+
+##### K25's conclusion
+
+What did we learn from this deep dive? I guess I can boil it down to the following:
+
+1. Shared memory blocking didn't speed up the kernel through data reuse. With
+   scalar `LDS` loads from shared memory it is as slow as k23. The gain comes
+   from the compiler's vectorized `LDS.128` loads of `As`, which cut the number
+   of wavefronts, and the compiler can only emit them when it can prove the
+   rows are aligned.
+2. Looking at SASS alongside the metrics can provide valuable insights into the
+   kernel's performance. And sometimes it's the only way.
+3. Sometimes a better kernel means worse metrics, as we saw for the Warp State
+   Statistics for k25.
 
 ## 1D blocktiling: attacking the MIO throttle
+
+
 
 ## 2D blocktiling: performance gains and bank conflicts
 
@@ -591,6 +858,19 @@ FFMA R2, R7, R4, R2                          // acc += A[i] * B[i]
 
 - L1/TEX hit rate: 97.33% (k21), 94.98% (k23)
 - Benchmark binary, no profiler: 36 ms (k29), 34 ms (cuBLAS)
+
+## Wavefronts vs requests significance for the kernel performance
+
+| Kernel | Duration, ms | Wavefronts, M | ms per M wavefronts |
+| ------ | ------------ | ------------- | ------------------- |
+| k23    | 451.9        | 4295          | 0.105               |
+| k30    | 447.1        | 4295          | 0.104               |
+| k25    | 323.2        | 3221          | 0.100               |
+| k31    | 345.9        | 3221          | 0.107               |
+| k26    | 145          | 1342          | 0.108               |
+| k27    | 74.4         | 738           | 0.101               |
+| k28    | 69.3         | 671           | 0.103               |
+| k29    | 60.6         | 403           | 0.151               |
 
 ## References
 
