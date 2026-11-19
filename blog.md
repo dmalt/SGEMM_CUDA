@@ -875,27 +875,99 @@ so adding more warps simply means longer queues.
 
 ## 2D blocktiling: performance gains and bank conflicts
 
-Continuting the improvement on that same shared memory access path, the 2D
-blocktiling kernel brings the duratuon further down to 74.4ms -- a 2x
+Continuing the improvement on that same shared memory access path, the 2D
+blocktiling kernel brings the duration further down to 74.4 ms -- a 2x
 improvement, like in the original post.
 
-We also see much better arithmetic pipes utilization (blue: k27, green: k26):
+We also see much better arithmetic pipe utilization (blue: k27, green: k26):
 
 ![k27 pipes utilization](./assets/k27_pipes.png)
 
-The warp stalls are significantly reduced, but MIO Throttle remains the main
-warp stalling factor:
-
-![k27 warp stalls](./assets/k27_warp_stalls.png)
-
-Interestingly, we now see bank conflicts on the shared loads, which were not
-there before. We have 301 989 888 in total.
-
 We also see the increased utilization of L1 cache again: the hit rate for k27
-sits at 18.8% vs 0.77% for k26.
+sits at 18.8% vs 0.77% for k26. How can the cache be utilized if we only load each
+element once?
+This is likely caused by loading of the matrix C from the global memory.
+Remember the sectors/request story from the naive kernel diagnosis? Let's consider
+how we load `C`:
+
+```cpp
+for (int iTM = 0; iTM < TM; ++iTM) {
+  for (int iTN = 0; iTN < TN; ++iTN) {
+    index = (tRow * TM + iTM) * N + tCol * TN + iTN;
+    C[index] = alpha * threadResults[iTM * TN + iTN] + beta * C[index];
+  }
+}
+```
+
+What happens here is not dissimilar to k21. Global memory is read in 32-byte
+sectors. Because the elements we load within the same warp (indexed by `tCol`)
+are non-contiguous in memory, each 32-byte sector contains both the data we've
+just asked for and the neighbouring elements we don't need yet. We can indirectly
+confirm this by looking at sectors/request statistics for L1. For k27 we see this
+value to be 4.37. Let's see if the napkin math agrees:
+
+```
+Setup
+  M = N = K = 4096
+  BM = BN = 128,  BK = TM = TN = 8
+  blocks  = (M / BM) * (N / BN)  = 32 * 32 = 1024 = 2^10
+  K-steps = K / BK               = 512          = 2^9
+
+Tile loads (A and B, global -> shared)
+  per K-step a block loads BM * BK = 1024 floats of A and BK * BN = 1024 of B
+  one warp request covers 32 floats -> 32 requests for A + 32 for B = 2^6
+  requests = 2^10 blocks * 2^9 steps * 2^6 = 2^25
+  sectors  = 2^25 * 4                      = 2^27   (4 sectors/request: fully coalesced)
+
+C loads (epilogue)
+  one warp request per 32 elements of C
+  requests = M * N / 32  = 2^19
+  sectors  = 2^19 * 32   = 2^24                (32 sectors/request: a sector per thread)
+
+Average
+  (2^27 + 2^24) / (2^25 + 2^19) = (2^8 + 2^5) / (2^6 + 1) = 288 / 65 = 4.4308
+```
+
+So we get estimated 4.43 vs 4.37 measured sectors/request. I say close enough:)
+
+Now, to get that L1 hitrate we need to mention a few things:
+
+1. L1 hit rate considers accessed sectors, not requests
+2. Both loads and stores are accounted; stores are always counted as hits
+3. The miss rate for C loads is 1 out of 8. Each thread owns a block of
+   `TN = 8` adjacent floats in a row of C, and since an L1 sector is 32 bytes,
+   that block is exactly one sector. With `iTN = 0` each thread loads the first
+   float of its block: a miss that brings in the whole sector. The loads for
+   `iTN = 1..7` read the same sector again and hit.
+4. Tile loads always miss cache -- we always load unique elements from A and B.
+
+<!-- TODO: add a diagram for point 3 -->
+
+Having that in mind, here's what we get for the napkin L1 hitrate:
+
+```
+Sectors
+  C loads  = 2^24,  of which hits = 2^24 * 7/8
+  C stores = 2^24,  all counted as hits
+  tiles    = 2^27,  no hits
+
+Hit rate
+  (2^24 * 7/8 + 2^24) / (2^27 + 2^24 + 2^24) = (7/8 + 1) / (8 + 1 + 1) = 0.1875
+```
+
+So, 18.75% napkin vs 18.8% measured. Pretty cool! That being said, the number
+of requests to load and store C is still tiny compared to the tile loads
+(`2^19` vs `2^25`), and those are only the GMEM loads -- most of the work is
+still loading from SMEM. So it doesn't affect performance. It's just nice to
+see how we can reason about some of these metrics even when they're puzzling at
+first.
+
+Let's get back to things that are actually crucial for the kernel performance.
 
 Shared memory requests are down to 167772160 (-79.17% vs k26) and the
-wavefronts - to 738197504 (-45.00% vs k26).
+wavefronts - to 738197504 (-45.00% vs k26). Interestingly, for the first time we see bank
+conflicts on the shared loads, 301 989 888 in total.
+This will be the main theme of the final kernel.
 
 Looking at SASS for the shared memory load instructions I see the mixture of
 `LDS` and `LDS.128` for this code below loading `As`:
@@ -912,15 +984,21 @@ for (int iDot = 0; iDot < BK; ++iDot) {
 Something funky is going on there, but it seems like the
 data are already loaded with `LDS.128`. Likely, the compiler again is able
 to reason about both `iDot` and `iTM` loops at the same time and figure out
-the optimized memory access pattern.
+the wide loads are possible.
 
-As expected, `Bs` loading loop (below) uses `LDS.128` everywhere. 'As expected' because the fast variable iterates over the contiguous bytes.
+As expected, the `Bs` loading loop (below) uses `LDS.128` everywhere. 'As expected'
+because the fast variable iterates over the contiguous bytes.
 
 ```cpp
 for (int iTN = 0; iTN < TN; ++iTN) {
   regTN[iTN] = Bs[iDot * BN + iTN + tCol * TN];
 }
 ```
+
+And the most important part, the warp stalls are significantly reduced, but MIO
+Throttle remains the main warp stalling factor:
+
+![k27 warp stalls](./assets/k27_warp_stalls.png)
 
 ## SMEM and GMEM optimization kernel: less of an issue than it appears
 
