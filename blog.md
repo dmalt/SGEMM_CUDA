@@ -875,6 +875,53 @@ so adding more warps simply means longer queues.
 
 ## 2D blocktiling: performance gains and bank conflicts
 
+Continuting the improvement on that same shared memory access path, the 2D
+blocktiling kernel brings the duratuon further down to 74.4ms -- a 2x
+improvement, like in the original post.
+
+We also see much better arithmetic pipes utilization (blue: k27, green: k26):
+
+![k27 pipes utilization](./assets/k27_pipes.png)
+
+The warp stalls are significantly reduced, but MIO Throttle remains the main
+warp stalling factor:
+
+![k27 warp stalls](./assets/k27_warp_stalls.png)
+
+Interestingly, we now see bank conflicts on the shared loads, which were not
+there before. We have 301 989 888 in total.
+
+We also see the increased utilization of L1 cache again: the hit rate for k27
+sits at 18.8% vs 0.77% for k26.
+
+Shared memory requests are down to 167772160 (-79.17% vs k26) and the
+wavefronts - to 738197504 (-45.00% vs k26).
+
+Looking at SASS for the shared memory load instructions I see the mixture of
+`LDS` and `LDS.128` for this code below loading `As`:
+
+```cpp
+for (int iDot = 0; iDot < BK; ++iDot) {
+  for (int iTM = 0; iTM < TM; ++iTM) {
+    regTM[iTM] = As[(iTM + tRow * TM) * BK + iDot];
+  }
+  ...
+}
+```
+
+Something funky is going on there, but it seems like the
+data are already loaded with `LDS.128`. Likely, the compiler again is able
+to reason about both `iDot` and `iTM` loops at the same time and figure out
+the optimized memory access pattern.
+
+As expected, `Bs` loading loop (below) uses `LDS.128` everywhere. 'As expected' because the fast variable iterates over the contiguous bytes.
+
+```cpp
+for (int iTN = 0; iTN < TN; ++iTN) {
+  regTN[iTN] = Bs[iDot * BN + iTN + tCol * TN];
+}
+```
+
 ## SMEM and GMEM optimization kernel: less of an issue than it appears
 
 ## Dealing with bank conflicts to finally topple the MIO throttle
