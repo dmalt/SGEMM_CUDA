@@ -967,10 +967,37 @@ Let's get back to things that are actually crucial for the kernel performance.
 Shared memory requests are down to 167772160 (-79.17% vs k26) and the
 wavefronts - to 738197504 (-45.00% vs k26). Interestingly, for the first time we see bank
 conflicts on the shared loads, 301 989 888 in total.
-This will be the main theme of the final kernel.
+This will be the main theme of the final kernel, so let's see where they come from.
 
-Looking at SASS for the shared memory load instructions I see the mixture of
-`LDS` and `LDS.128` for this code below loading `As`:
+Bank conflicts can be examined on a per-line basis in the "Source" tab:
+
+![k27 bank conflicts](./assets/k27_bank_conflicts_per_line.png)
+
+The metric that shows the bank conflicts is called "L1 Wavefronts Shared Excessive".
+Excessive wavefronts are indeed what results from the bank conflicts: whenever
+a conflict occurs, the work is split into non-conflicting parts and queued up.
+
+We see that the line `regTN[iTN] = Bs[iDot * BN + iTN + tCol * TN];` is responsible
+for 88.8% of the total excessive wavefronts. To figure out why we simply need to
+see what indices a single warp produces, modulo the number of banks (32). Let's say
+`iDot` and `iTN` are 0. With `TN=8` we have
+
+```txt
+tCol = 0  => (tCol * TN) % 32 = 0
+tCol = 1  => (tCol * TN) % 32 = 8
+tCol = 2  => (tCol * TN) % 32 = 16
+tCol = 3  => (tCol * TN) % 32 = 24
+tCol = 4  => (tCol * TN) % 32 = 0
+tCol = 5  => (tCol * TN) % 32 = 8
+...
+tCol = 16 => (tCol * TN) % 32 = 0
+```
+
+So we only access 4 banks out of 32 here: 0, 8, 16 and 24. Let's remember this,
+we'll come back to it very soon.
+
+Let's look further at SASS for the shared memory load instructions. Here's a
+surprise: for loading `As` we see the mixture of `LDS` and `LDS.128`.
 
 ```cpp
 for (int iDot = 0; iDot < BK; ++iDot) {
@@ -981,10 +1008,47 @@ for (int iDot = 0; iDot < BK; ++iDot) {
 }
 ```
 
-Something funky is going on there, but it seems like the
-data are already loaded with `LDS.128`. Likely, the compiler again is able
-to reason about both `iDot` and `iTM` loops at the same time and figure out
-the wide loads are possible.
+SASS below is the load instructions highlighted by the profiler for
+`regTM[iTM] = As[(iTM + tRow * TM) * BK + iDot];`. The lines are again grouped
+and annotated by Claude:
+
+```asm
+// As row = BK floats = 0x20 bytes; R6 points at the thread's first row (tRow * TM)
+
+// 8 x LDS: iDot = 0 of each row
+LDS.U     R104, [R6.X4]          // row 0
+LDS.U     R38,  [R6.X4+0x20]     // row 1
+LDS.U     R120, [R6.X4+0x40]     // row 2
+LDS.U     R20,  [R6.X4+0x60]     // row 3
+LDS.U     R34,  [R6.X4+0x80]     // row 4
+LDS.U     R32,  [R6.X4+0xa0]     // row 5
+LDS.U     R31,  [R6.X4+0xc0]     // row 6
+LDS.U     R29,  [R6.X4+0xe0]     // row 7
+
+// 8 x LDS.128: iDot = 0..3 of each row (iDot = 0 loaded again)
+LDS.U.128 R52, [R6.X4]           // row 0
+LDS.U.128 R48, [R6.X4+0x20]      // row 1
+LDS.U.128 R44, [R6.X4+0x40]      // row 2
+LDS.U.128 R40, [R6.X4+0x60]      // row 3
+LDS.U.128 R36, [R6.X4+0x80]      // row 4
+LDS.U.128 R32, [R6.X4+0xa0]      // row 5
+LDS.U.128 R28, [R6.X4+0xc0]      // row 6
+LDS.U.128 R16, [R6.X4+0xe0]      // row 7
+
+// 8 x LDS.128: iDot = 4..7 of each row
+LDS.U.128 R24, [R6.X4+0x10]      // row 0
+LDS.U.128 R52, [R6.X4+0x30]      // row 1
+LDS.U.128 R44, [R6.X4+0x50]      // row 2
+LDS.U.128 R36, [R6.X4+0x70]      // row 3
+LDS.U.128 R32, [R6.X4+0x90]      // row 4
+LDS.U.128 R48, [R6.X4+0xb0]      // row 5
+LDS.U.128 R40, [R6.X4+0xd0]      // row 6
+LDS.U.128 R56, [R6.X4+0xf0]      // row 7
+```
+
+Something funky is going on there: most of the data are already loaded with
+`LDS.128`. Likely, the compiler again is able to reason about both `iDot` and
+`iTM` loops at the same time and figure out the wide loads are possible.
 
 As expected, the `Bs` loading loop (below) uses `LDS.128` everywhere. 'As expected'
 because the fast variable iterates over the contiguous bytes.
@@ -1002,7 +1066,50 @@ Throttle remains the main warp stalling factor:
 
 ## SMEM and GMEM optimization kernel: less of an issue than it appears
 
+The next kernel in the original ladder aims to optimize the memory access
+by manually forcing the wide loads we saw the compiler throw in above.
+I've mentioned in the previous section that some of the `As` loads are already
+in the wide `LDS.128` form, so it's not a big surprise that this kernel is
+only marginally faster than the previous one with a 6.91% speedup down to 69.3 ms.
+
+Inspecting SASS for it reveals that all of the load instructions for As are now
+vectorized, as well as the global loads: we see `LDS.128` and `LDG.128` respectively.
+And the MIO Throttle stall is down by 6% to 3.39.
+
+Shared-load requests drop by 20% (168M → 134M) but wavefronts only by 9% (738M
+→ 671M), and the duration follows the wavefronts: −7%.
+
+Bank conflicts for shared load are down by 11%, but the new 16777216 shared
+store conflicts were introduced. Note that MIO stalls are still the main stall
+reason, so the bank conflicts do seem like a good next target.
+
+![k28 warp stalls](./assets/k28_warp_stalls.png)
+
 ## Dealing with bank conflicts to finally topple the MIO throttle
+
+Solving the bank conflicts didn't do much for Boehm apart from making the kernels slower
+on his A6000. In my experiments using T4 however resolving the bank conflicts resulted
+in a significant boost from 69.3 to 60.62 ms.
+
+We see from the Memory Workload Analysis section that the shared load bank
+conflicts are gone (shared store bank conflicts at the same time are up by 100%
+-- to 33554432). And for the first time we see that SMEM is not the main cause
+of the warp stalls! MIO throttle at 1.3 cycles subsided to "Stall Not Selected"
+with 1.88 cycles out of 8 warp cycles per issued instruction
+
+![k29 warp stalls](./assets/k29_warp_stalls.png)
+
+- The number of Shared Memory Load requests is up by 150% to 335544320, but
+  the wavefronts number is actually down by 40%: 402653184. This attributes to
+  `Bs`'s shared load going back to using unvectorized `LDS` loads.
+- The ultimate limit we should hit for an optimal kernel is the FMA pipeline.
+  For k29 it's at 74.42% utilization, suggesting another 25% duration cut should
+  be theoretically possible.
+
+> [!NOTE]
+> "Stall Not Selected" means that the warp was ready, but another warp was
+> selected instead. It's not really a stall. [Nvidia docs on
+> this](https://docs.nvidia.com/nsight-compute/ProfilingGuide/index.html#warp-stall-reasons)
 
 ## Conclusion
 
