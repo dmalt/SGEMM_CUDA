@@ -42,9 +42,9 @@ To climb the ladder I used the following setup:
   - download the profiler's reports
   - analyze them locally using the NCU UI
 - I used a single matrix size to profile to save time: 4096x4096
-- The durations I report below are the ones from the NCU profiler, so they contain
-  significant profiling overhead and should only be judged in comparison, not as
-  absolute numbers.
+- The durations I report below are the ones from the NCU profiler and NCU locks
+  the clock at the base rate (600 MHz in my reports), so the durations should
+  only be judged in comparison, not as absolute numbers.
 - I analyzed the profiling metrics together with Claude Code constantly
   cross-checking my understanding of what's going on.
 
@@ -130,8 +130,7 @@ from the Speed Of Light section in NCU:
 | DRAM Throughput [%]         |  0.96 | DRAM Frequency [Ghz]     |          5.00 |
 
 Note that the NCU-reported duration is much higher than 2.25 seconds coming
-from Boehm's profiling harness. That's the effect of the mentioned
-profiling overhead.
+from Boehm's profiling harness. That's the effect of profiling mentioned above.
 
 One thing that immediately catches the eye is that the kernel sits at 99.9%
 L1/TEX cache throughput. Let's take a look at the Memory Chart from the 'Memory
@@ -314,7 +313,7 @@ now load the same element of matrix A and different, but contiguous in memory
 elements of matrix B.
 
 After the fix we see more than a 13x improvement in the kernel duration: from
-6s to 451 ms (NCU times with overhead). The metrics that we observed earlier
+6s to 451 ms (NCU times). The metrics that we observed earlier
 also look much better now:
 
 - SM Throughput: `6.05% -> 79.2%` (Bounded now by memory throughput, same `79.2%`)
