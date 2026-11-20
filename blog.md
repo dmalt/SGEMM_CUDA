@@ -1,12 +1,12 @@
 # The what and why
 
 Recently I embarked on a journey of learning the ins and outs of the ML models
-machinery. One corner of it that specifically drew my attention is the CUDA
-programming -- tooling that powers those fast matrix multiplications, that make
-the modern AI possible in the first place. And since I think the best way to
+machinery. One corner of it that specifically drew my attention is CUDA
+programming -- tooling that powers those fast matrix multiplications that make
+modern AI possible in the first place. And since I think the best way to
 learn a thing is to build it yourself, I decided to lockstep [Boehm's excellent
 worklog](https://siboehm.com/articles/22/CUDA-MMM) on coding a matrix
-multiplication kernel performing at about 94% of the CuBLAS.
+multiplication kernel performing at about 94% of cuBLAS.
 
 This post is my account of re-implementing a large chunk of the ladder, but more in
 the
@@ -14,7 +14,7 @@ the
 fashion: I profile each intermediate kernel to see if the numbers pave the
 same path as the original worklog suggests, while learning the tooling in the process.
 
-In the end, I reach similar 94% of CuBLAS performance, albeit with a different
+In the end, I reach a similar 94% of cuBLAS performance, albeit with a different
 kernel (makes sense, I use a T4 GPU vs Boehm's A6000). Most importantly though,
 using the profiler revealed that the textbook story about the data locality and
 optimizing the off-chip memory usage appears to be over-simplified and somewhat
@@ -31,7 +31,7 @@ can lead us astray.
 
 To climb the ladder I used the following setup:
 
-- Clone Boehm's repo, code my kernels alongside of his, use his harness to
+- Clone Boehm's repo, code my kernels alongside his, use his harness to
   evaluate
 - Use Google Colab for the GPU access:
   - It's free
@@ -59,14 +59,14 @@ CLI for three reasons:
 - it's easier to integrate with the AI tooling
 - I find it easier in general to deal with the terminal tools than with UIs
 
-However, NCU has a lot of metrics, some of which are quite complex and I
+However, NCU has a lot of metrics, some of which are quite complex, and I
 quickly realized that using a GUI provides some crucial benefits, especially
 for someone who's learning:
 
 - it represents the data visually, so it's easier to digest, especially with
   things like the baseline comparison, which allows you to compare the kernels
   among each other
-- with all the data gathered in one place and easy to navigate to it makes
+- with all the data gathered in one place and easy to navigate to, it makes
   discoverability much less of an issue, which is a huge deal for someone who's
   learning what tools and techniques are available for the first time.
 
@@ -130,7 +130,7 @@ from the Speed Of Light section in NCU:
 | DRAM Throughput [%]         |  0.96 | DRAM Frequency [Ghz]     |          5.00 |
 
 Note that the NCU-reported duration is much higher than 2.25 seconds coming
-from the Boehm's profiling harness. That's the effect of the mentioned
+from Boehm's profiling harness. That's the effect of the mentioned
 profiling overhead.
 
 One thing that immediately catches the eye is that the kernel sits at 99.9%
@@ -167,7 +167,7 @@ Let's take a look at the Warp State Statistics for the naive kernel:
 ![k21 warp state](./assets/k21_warp_stats.png)
 
 We see that same 236 out of 250 cycles figure for the 'Stall LG Throttle'.
-What's 'LG Throttle'? To quote Nvidia Developer blog on this, it's
+What's 'LG Throttle'? To quote the Nvidia Developer blog on this, it's
 
 > ... “average # of warps resident per issue cycle, waiting for a free entry in the
 > LSU instruction queue”. LSU is Load/Store Unit, one of the functional units in
@@ -180,8 +180,8 @@ Analysis section, which reports utilization of the pipes, including LSU:
 ![k21 pipes](./assets/k21_pipes.png)
 
 It sits at a mere 6.05%. Same number as we saw in the SOL table above for the
-Compute Throughput. The reason being Compute Throughput is the aggregate metric - it
-reports maximum among several other metrics, which LSU is one of.
+Compute Throughput. The reason is that Compute Throughput is an aggregate metric - it
+reports the maximum among several other metrics, LSU being one of them.
 
 But the important part is that LSU is nowhere near saturation. So it's not like
 we make too many requests to the LSU. But it's the one we're waiting for. What
@@ -193,16 +193,16 @@ to 'Memory Tables' in the dropdown next to the section title, we'll see a whole 
 of stats in the L1/TEX Cache section. We're interested in the column called
 'sectors/request'. For the 'Global Load' section it reads '16.5'. This is very high!
 
-To see why, we need to understand what's a sector and how a good memory access
-pattern should look like. When we fetch the data on L1, the access is
+To see why, we need to understand what a sector is and what a good memory access
+pattern should look like. When we fetch data from L1, the access is
 structured in 32-byte blocks (or 8 fp32 numbers), called sectors. Instructions
 to load the data from the memory are organized per-warp, so for 32 lanes in
-warp we are requesting 32 floating point numbers from L1. If these numbers are
+a warp we are requesting 32 floating point numbers from L1. If these numbers are
 contiguous in memory, we would touch 4 sectors to access 32 numbers. If they
 are not, however, we would touch up to 32 sectors in the worst case. And whenever
 we touch a sector on L1, the whole sector gets moved. So in our case of average
 16.5 sectors per request we effectively touch 4.125 times more data than needed.
-This is the manifestation of the uncoalesced memory access mentioned in the
+This is the manifestation of the uncoalesced memory access mentioned in
 Boehm's longread.
 
 Let's see where this number comes from. Here's how we multiply a row of A by a column
@@ -229,7 +229,7 @@ elements of matrix A touches 8x the data it needs, causing every request to be s
 hence the low LSU throughput clogging up everything downstream.
 
 Coming back to the L1/TEX cache throughput of 99.9%. It's also the aggregate metric
-and, to tie it back to the sectors/requests I looked into what it's composed of and
+and, to tie it back to the sectors/request, I looked into what it's composed of and
 what is the primary limiting one. It can be done similar to this:
 
 ```sh
@@ -279,7 +279,7 @@ what happens is as follows.
   and very long warp stalls.
 
 Or at least I think that's what happens: some of the things, like how
-sectors/requests translate into the wavefronts, I can't directly ascertain.
+sectors/request translate into the wavefronts, I can't directly ascertain.
 
 ## The coalesced kernel: identifying L1 as the bottleneck with the warp state statistics
 
@@ -329,28 +329,28 @@ also look much better now:
 - LSU pipe utilization: `6.05% -> 79.2%`
 
 They all point to the same thing: the coalescing fix worked. The Global Loads now
-touch far fewer sectors per request on average, LSU unit on L1 is not choking
+touch far fewer sectors per request on average, the LSU unit on L1 is not choking
 anymore because of how heavy the requests are and we don't waste an absurd
-number of cycles on waiting for it in the warps scheduler. Good.
+number of cycles on waiting for it in the warp scheduler. Good.
 
 However, L1's LSU is still the busiest part of the kernel, just not because of
 how slow each request is but because of how many there are: the warp scheduler
-still stalls with that same LG Throttle. Note also the LSU utilization raising
+still stalls with that same LG Throttle. Note also the LSU utilization rising
 from 6.05% to 79.2%: it points to that same shift in the limiting factor for L1
 from latency to the number of requests.
 
-We note also, that the hit rate for L1 is still very high at 94.98%, so most
+Note also that the hit rate for L1 is still very high at 94.98%, so most
 of the inefficiency of loading from global memory is absorbed by the L1 cache.
 
 ## Shared memory blocking: shifting the bottleneck and how the intuition fails us
 
-What Boehm does next in his post is laying out the global memory access textbook
+What Boehm does next in his post is lay out the global memory access textbook
 argument. He argues that since all our loads are to the global memory and
 global memory loads are awfully slow, we can make use of the fact that
 most of the data for SGEMM is being reused and preload the reused matrix blocks
 into SMEM.
 
-We saw however, that most of the data traffic is served from L1 cache, which is
+We saw, however, that most of the data traffic is served from L1 cache, which is
 physically already located in the same place as SMEM. So preloading the data
 into the shared memory should bring about no performance improvement, right?
 
@@ -363,8 +363,8 @@ hell? Let's check the metrics.
 First, from the Warp State Statistics we see that the limiting factor is not
 `Stall LG Throttle` anymore. Instead it's `Stall MIO Throttle` at 26.72 cycles
 (MIO is the pipeline concerning the shared memory among other things). Warp
-Cycles Per Issued Instruction also worsened to 41.36 cycles. So for warps waiting
-on the shared memory we went from 10.4/19.52 to 26.72/41.36 cycles -- much worse!
+Cycles Per Issued Instruction also worsened to 41.36 cycles. So for the warps stalls
+we went from 10.4/19.52 (LG) to 26.72/41.36 (MIO) cycles -- much worse!
 
 On the other hand, we see that the total number of instructions went down from
 17.7G to 6G suggesting that we're doing less work now - almost 3-fold.
@@ -384,10 +384,10 @@ know that the global memory traffic is not the issue, that must be it!
 
 ### Diagnosing the SMEM instructions shrink with SASS
 
-Let's try to calculate naively, how many SMEM requests our kernel needs for a
+Let's try to calculate naively how many SMEM requests our kernel needs for a
 `4096x4096` matrix multiplication. First, the inner loop is 4096 iterations,
 and inside we need to load elements of A and B, from L1 in case of k23 and from
-SMEM in case of k25. Then there are `4096^2` such loops, one per the output
+SMEM in case of k25. Then there are `4096^2` such loops, one per output
 element, so `4096^3 * 2`, and that total must be divided by 32, since the
 requests are formed per warp. That gives `4096^3 * 2 / 32 = 4 294 967 296` -
 our 4.3 G for k23 up to a small delta. The same should be true for k25, but its
@@ -402,8 +402,8 @@ for (int i = 0; i < BLOCKSIZE; i++) {
 ```
 
 and see the SASS code that the compiler generated for it in k25. The
-instructions below are grouped and annotated by Claude for readability, it's
-not the compiler's order. Note also that `BLOCKSIZE` we statically define in
+instructions below are grouped and annotated by Claude for readability; it's
+not the compiler's order. Note also that the `BLOCKSIZE` we statically define in
 the code is 32.
 
 ```asm
@@ -496,7 +496,7 @@ LDS.U R10, [R0.X4+0x1f80]         // B[31]
 FFMA R31, R10, R7, R6             // acc += A[31] * B[31]
 ```
 
-So, two things to notice. First, compiler uses the static `BLOCKSIZE=32`
+So, two things to notice. First, the compiler uses the static `BLOCKSIZE=32`
 knowledge and fully unrolls the loop. Second and most importantly, it uses the
 vectorized `LDS.U.128` instructions to load 4 elements of A with one
 instruction. That's new!
@@ -572,9 +572,9 @@ that using shared memory blocks merely enabled a better use of the vectorized
 memory access -- and has nothing to do with data locality?
 
 > [!NOTE]
-> `LDG` is a global memory load instruction and we compare it against the
+> `LDG` is a global memory load instruction and we compare it against
 > k25's `LDS`, which is for SMEM, but here it doesn't matter,
-> since as we know those `LDG`s hit the L1 cache anyways.
+> since as we know those `LDG`s hit the L1 cache anyway.
 
 ### Experiments with breaking the compiler optimizations
 
@@ -625,8 +625,8 @@ the elements of `A` from GMEM via L1 cache. What enabled it now? It is
 
 Vectorized loads only work with memory-aligned data and the
 compiler needs to be able to prove that such alignment takes place.
-Technically, the requirement is spelled out in [Nvidia CUDA C++
-guide](https://docs.nvidia.com/cuda/archive/13.0.0/cuda-c-programming-guide/index.html#device-memory-accesses)
+Technically, the requirement is spelled out in the [Nvidia CUDA C++
+guide](https://docs.nvidia.com/cuda/archive/13.0.0/cuda-c-programming-guide/index.html#device-memory-accesses):
 
 > Global memory instructions support reading or writing words of size equal to
 > 1, 2, 4, 8, or 16 bytes. Any access (via a variable or a pointer) to data
@@ -640,10 +640,10 @@ it's safe to assume the same holds for SMEM.)
 So, in order for the compiler to read four fp32 elements of As (or A), `tRow *
 BLOCKSIZE + i, tRow * BLOCKSIZE + i + 1, tRow * BLOCKSIZE + i + 2,  tRow *
 BLOCKSIZE + i + 3` as 16 bytes at once, the compiler needs each of the
-underlying addresses to be a multiple of 16. Note, that row matrix `tRow` is
+underlying addresses to be a multiple of 16. Note that the matrix row `tRow` is
 generally different between threads, so each thread reads a row of As
 independently. Any address can be represented as `base + offset`. The offset
-here would be the index into array: `tRow * BLOCKSIZE + i`. So what we really
+here would be the index into the array: `tRow * BLOCKSIZE + i`. So what we really
 have is the condition `(base + sizeof(float) * (tRow * BLOCKSIZE + 4 * j)) % 16
 == 0` with `sizeof(float) = 4 bytes`, and the 4 appearing in `4 * j` because we
 only need to consider alignment on the first element in the set of 4.
@@ -750,7 +750,7 @@ So what's the performance for these two kernels? A reminder: k25 was at 323 ms.
 - k31: 345 ms
 
 So replacing the `BLOCKSIZE` with a runtime variable puts the SMEM blocking
-kernel back to the k23's performance, while having the same tiling
+kernel back to k23's performance, while having the same tiling
 structure and therefore the same data locality as k25!
 
 Let's take a look at the number of `SMEM` requests for these two kernels:
@@ -762,12 +762,12 @@ So k30 is back to 2 requests/iteration -- no vectorization (confirmed by its SAS
 But k31 is weird: some vectorization is there, but it's not the same as k25. SASS sheds
 light on it:
 
-<!-- ![K31 inner loop SASS](./assets/k31_sass.png) -->
+![K31 inner loop SASS](./assets/k31_sass.png)
 
 So it uses `LDS.U.64` instructions! Why not `LDS.U.128`? I don't know. But that explains
 the difference in the requests total.
 
-##### A misaligned `As` row breaks vectorization
+#### A misaligned `As` row breaks vectorization
 
 To nail down the alignment assumption, I ran 3 more versions of k25,
 changing the size of `As` so that its number of columns is not such a nice
@@ -836,7 +836,7 @@ What did we learn from this deep dive? I guess I can boil it down to the followi
 
 ## 1D blocktiling: attacking the MIO
 
-We saw that shared memory pipeline (MIO) is still the main stall reason for
+We saw that the shared memory pipeline (MIO) is still the main stall reason for
 k25. The next kernel's optimization is pointed directly at this: we increase
 the arithmetic intensity of the kernel by going from computing a single output
 element per thread to computing multiple. This should reduce the pressure on
@@ -861,9 +861,9 @@ even further with 2D blocktiling.
 
 > [!NOTE]
 > In his post Boehm suggests that `Bs` is loaded with `LDS.128`
-> instruction. That's a mixup! In reality it's As that's wide-loaded, as we saw
+> instructions. That's a mixup! In reality it's As that's wide-loaded, as we saw
 > before when we zoomed in on k25's performance and SASS. It also suggests that
-> it's fine to read As non-contiguously in the inner loop: compiler recognizes
+> it's fine to read As non-contiguously in the inner loop: the compiler recognizes
 > that we read the whole BK \* TM chunk in two nested loops and optimizes the
 > loads for us.
 
@@ -906,7 +906,7 @@ just asked for and the neighbouring elements we don't need yet. We can indirectl
 confirm this by looking at sectors/request statistics for L1. For k27 we see this
 value to be 4.37. Let's see if the napkin math agrees:
 
-```
+```txt
 Setup
   M = N = K = 4096
   BM = BN = 128,  BK = TM = TN = 8
@@ -930,7 +930,7 @@ Average
 
 So we get estimated 4.43 vs 4.37 measured sectors/request. I say close enough:)
 
-Now, to get that L1 hitrate we need to mention a few things:
+Now, to get that L1 hit rate we need to mention a few things:
 
 1. L1 hit rate considers accessed sectors, not requests
 2. Both loads and stores are accounted; stores are always counted as hits
@@ -943,9 +943,9 @@ Now, to get that L1 hitrate we need to mention a few things:
 
 <!-- TODO: add a diagram for point 3 -->
 
-Having that in mind, here's what we get for the napkin L1 hitrate:
+Having that in mind, here's what we get for the napkin L1 hit rate:
 
-```
+```txt
 Sectors
   C loads  = 2^24,  of which hits = 2^24 * 7/8
   C stores = 2^24,  all counted as hits
@@ -977,23 +977,15 @@ The metric that shows the bank conflicts is called "L1 Wavefronts Shared Excessi
 Excessive wavefronts are indeed what results from the bank conflicts: whenever
 a conflict occurs, the work is split into non-conflicting parts and queued up.
 
-We see that the line `regTN[iTN] = Bs[iDot * BN + iTN + tCol * TN];` is responsible
-for 88.8% of the total excessive wavefronts. To figure out why we simply need to
-see what indices a single warp produces, modulo the number of banks (32). Let's say
-`iDot` and `iTN` are 0. With `TN=8` we have
+We see that the line `regTN[iTN] = Bs[iDot * BN + iTN + tCol * TN];` is
+responsible for 88.88% of the total excessive wavefronts (the remaining 11.11% is
+attributed to the line `regTM[iTM] = As[(iTM + tRow * TM) * BK + iDot];`, but
+let's focus on `Bs` - the reasoning is similar.)
 
-```txt
-tCol = 0  => (tCol * TN) % 32 = 0
-tCol = 1  => (tCol * TN) % 32 = 8
-tCol = 2  => (tCol * TN) % 32 = 16
-tCol = 3  => (tCol * TN) % 32 = 24
-tCol = 4  => (tCol * TN) % 32 = 0
-tCol = 5  => (tCol * TN) % 32 = 8
-...
-tCol = 16 => (tCol * TN) % 32 = 0
-```
-
-So we only access 4 banks out of 32 here: 0, 8, 16 and 24. Let's remember this,
+To figure out what's conflicting we need to see what indices a single warp
+produces, modulo the number of banks (32). Let's say `iDot` and `iTN` are 0.
+With `TN=8` we have `(tCol * TN) % 32 = 8 * (tCol % 4)`,
+so we only access 4 different banks out of 32 here. Let's remember this,
 we'll come back to it very soon.
 
 Let's look further at SASS for the shared memory load instructions. Here's a
@@ -1008,7 +1000,7 @@ for (int iDot = 0; iDot < BK; ++iDot) {
 }
 ```
 
-SASS below is the load instructions highlighted by the profiler for
+The SASS below shows the load instructions highlighted by the profiler for
 `regTM[iTM] = As[(iTM + tRow * TM) * BK + iDot];`. The lines are again grouped
 and annotated by Claude:
 
@@ -1066,13 +1058,15 @@ Throttle remains the main warp stalling factor:
 
 ## SMEM and GMEM optimization kernel: less of an issue than it appears
 
-The next kernel in the original ladder aims to optimize the memory access
-by manually forcing the wide loads we saw the compiler throw in above.
-I've mentioned in the previous section that some of the `As` loads are already
+The next kernel in the ladder aims to optimize the memory access by manually
+forcing those wide loads that we already saw the compiler using when the conditions
+are right.
+
+In the k27 section we saw that most of the `As` loads are already
 in the wide `LDS.128` form, so it's not a big surprise that this kernel is
 only marginally faster than the previous one with a 6.91% speedup down to 69.3 ms.
 
-Inspecting SASS for it reveals that all of the load instructions for As are now
+Inspecting SASS for it confirms that all of the load instructions for As are now
 vectorized, as well as the global loads: we see `LDS.128` and `LDG.128` respectively.
 And the MIO Throttle stall is down by 6% to 3.39.
 
@@ -1080,8 +1074,13 @@ Shared-load requests drop by 20% (168M → 134M) but wavefronts only by 9% (738M
 → 671M), and the duration follows the wavefronts: −7%.
 
 Bank conflicts for shared load are down by 11%, but the new 16777216 shared
-store conflicts were introduced. Note that MIO stalls are still the main stall
-reason, so the bank conflicts do seem like a good next target.
+store conflicts were introduced. The lines responsible are the same, except
+the `As` stores are now split:
+
+![k28 bank conflicts](./assets/k28_bank_conflicts_per_line.png)
+
+With MIO stalls still being at the top (see below), the bank conflicts do seem
+like an obvious next target.
 
 ![k28 warp stalls](./assets/k28_warp_stalls.png)
 
@@ -1098,6 +1097,8 @@ of the warp stalls! MIO throttle at 1.3 cycles subsided to "Stall Not Selected"
 with 1.88 cycles out of 8 warp cycles per issued instruction
 
 ![k29 warp stalls](./assets/k29_warp_stalls.png)
+
+![k29 bank conflicts](./assets/k29_bank_conflicts_per_line.png)
 
 - The number of Shared Memory Load requests is up by 150% to 335544320, but
   the wavefronts number is actually down by 40%: 402653184. This attributes to
