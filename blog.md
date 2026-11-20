@@ -42,7 +42,7 @@ To climb the ladder I used the following setup:
   - download the profiler's reports
   - analyze them locally using the NCU UI
 - I used a single matrix size to profile to save time: 4096x4096
-- The durations I report below are the ones from the NCU profiler and NCU locks
+- The durations I report below are the ones from the NCU profiler, and NCU locks
   the clock at the base rate (600 MHz in my reports), so the durations should
   only be judged in comparison, not as absolute numbers.
 - I analyzed the profiling metrics together with Claude Code constantly
@@ -1096,6 +1096,7 @@ of the warp stalls! MIO throttle at 1.3 cycles subsided to "Stall Not Selected"
 with 1.88 cycles out of 8 warp cycles per issued instruction
 
 ![k29 warp stalls](./assets/k29_warp_stalls.png)
+
 
 ![k29 bank conflicts](./assets/k29_bank_conflicts_per_line.png)
 
