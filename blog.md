@@ -981,6 +981,7 @@ responsible for 88.88% of the total excessive wavefronts (the remaining 11.11% i
 attributed to the line `regTM[iTM] = As[(iTM + tRow * TM) * BK + iDot];`, but
 let's focus on `Bs` - the reasoning is similar.)
 
+
 To figure out what's conflicting we need to see what indices a single warp
 produces, modulo the number of banks (32). Let's say `iDot` and `iTN` are 0.
 With `TN=8` we have `(tCol * TN) % 32 = 8 * (tCol % 4)`,
@@ -1066,43 +1067,134 @@ in the wide `LDS.128` form, so it's not a big surprise that this kernel is
 only marginally faster than the previous one with a 6.91% speedup down to 69.3 ms.
 
 Inspecting SASS for it confirms that all of the load instructions for As are now
-vectorized, as well as the global loads: we see `LDS.128` and `LDG.128` respectively.
-And the MIO Throttle stall is down by 6% to 3.39.
+vectorized, as well as the global loads: we see `LDS.128` and `LDG.128`
+respectively. For `float4 tmp = reinterpret_cast<float4 *>(&A[innerRowA * K +
+innerColA * 4])[0];` we have (no loop unrolling):
 
+```asm
+MOV R40, UR6
+MOV R41, UR7
+IMAD R25, R86, c[0x0][0x168], R25
+IMAD.WIDE.U32 R40, R25, 0x4, R40
+LDG.E.128.SYS R40, [R40]
+```
+
+And for `regTM[iTM] = As[iDot * BM + tRow * TM + iTM];` the instructions
+are scattered and interleaved with those for the other lines, but all of the
+`LDS` ones appear in the `LDS.U.128` form.
+
+Our most important metric so far, the MIO Throttle stall, is down by 6% to 3.39
+and is still the main stall reason (see the figure below).
 Shared-load requests drop by 20% (168M → 134M) but wavefronts only by 9% (738M
-→ 671M), and the duration follows the wavefronts: −7%.
-
-Bank conflicts for shared load are down by 11%, but the new 16777216 shared
-store conflicts were introduced. The lines responsible are the same, except
-the `As` stores are now split:
-
-![k28 bank conflicts](./assets/k28_bank_conflicts_per_line.png)
-
-With MIO stalls still being at the top (see below), the bank conflicts do seem
-like an obvious next target.
+→ 671M). Note the correlation with the speedup of 6.91%.
 
 ![k28 warp stalls](./assets/k28_warp_stalls.png)
 
-## Dealing with bank conflicts to finally topple the MIO throttle
+Coming back to the bank conflicts, for the shared loads those are down by 11%,
+but 16777216 new shared store conflicts were introduced. The lines
+responsible are the same, except the `As` stores are now split:
 
-Solving the bank conflicts didn't do much for Boehm apart from making the kernels slower
-on his A6000. In my experiments using T4 however resolving the bank conflicts resulted
-in a significant boost from 69.3 to 60.62 ms.
+![k28 bank conflicts](./assets/k28_bank_conflicts_per_line.png)
+
+So, since the MIO throttle is still the main issue, the bank conflicts look
+like an obvious next target to tackle it.
+
+
+But first, let's napkin-math the number of shared-load wavefronts and see if we
+can arrive at the measured 671088640. I'll count per warp per K-tile and
+multiply by the number of warps and K-tiles at the end. Recall that with 256
+threads per block, `tRow = threadIdx.x / 16` and `tCol = threadIdx.x % 16`, so
+a warp holds two values of `tRow`, each with `tCol` running from 0 to 15.
+
+First, for `regTM[iTM] = As[iDot * BM + tRow * TM + iTM];`. Each thread loads
+`TM = 8` floats per iDot with 2 `LDS.128` instructions, so it's 16 instructions
+per K-tile (BK = 8 iterations of iDot). Within one instruction, the 16 lanes of
+one `tRow` all read the same `float4` (a broadcast), and the other 16 lanes
+read another `float4` 8 floats further. That's 8 different floats in 8
+different banks, so one wavefront should be enough. But we saw in k25 that a
+broadcast `LDS.128` resolvs into 2 wavefronts (the reason being unclear), so
+let's assume 2 here as well. That's `16 * 2 = 32` wavefronts per warp per
+K-tile.
+
+Now, for `regTN[iTN] = Bs[iDot * BN + iTN + tCol * TN];` we again have 16
+`LDS.128` instructions per K-tile, but they are not broadcasts: `tCol` is the
+fast index, so the 16 values of `tCol` ask for 16 different `float4`s (the second
+`tRow` asks for the same ones). We saw for k27 that for a fixed `iTN` this index
+taps into only 4 different banks. A wide load covers 4 consecutive `iTN`, so
+each instruction uses 16 banks, with 4 different floats in each:
+
+```
+bank     0-3   4-7   8-11  12-15  16-19  20-23  24-27  28-31
+tCol     0     -     1     -      2      -      3      -
+         4     -     5     -      6      -      7      -
+         8     -     9     -      10     -      11     -
+         12    -     13    -      14     -      15     -
+```
+
+A bank delivers one float per wavefront, so it takes at least 4 wavefronts per
+instruction. On top of that come the bank conflicts: NCU reports 268435456 of
+them for the shared loads, all on the `Bs` line. Spread over
+`16 * 512 * 8192` `Bs` instructions, that's 4 extra wavefronts per instruction,
+so 8 in total, and `16 * 8 = 128` wavefronts per warp per K-tile.
+
+In total, we get 32 + 128 = 160 wavefronts per warp per K-tile. With
+4096² / 64 / 32 = 8192 warps and K / BK = 512 K-tiles that's
+160 × 512 × 8192 = 671088640, exactly the measured number, which also confirms
+the 2 wavefronts per `As` instruction. The 268435456 conflict wavefronts are
+what we're going after next.
+
+One important observation from this math: a wavefront reads at most 32 floats,
+one per bank. So when a warp needs 32 different floats from 32 different banks,
+a scalar `LDS` already gets them in one wavefront, and vectorization can't
+reduce the number of wavefronts, only the number of instructions.
+
+## Topple the throttle
+
+Solving the bank conflicts didn't do much for Boehm apart from making the
+kernels slower on his A6000. In my experiments on a T4, however, resolving the
+bank conflicts resulted in a significant boost from 69.3 down to 60.62 ms.
 
 We see from the Memory Workload Analysis section that the shared load bank
 conflicts are gone (shared store bank conflicts at the same time are up by 100%
 -- to 33554432). And for the first time we see that SMEM is not the main cause
 of the warp stalls! MIO throttle at 1.3 cycles subsided to "Stall Not Selected"
-with 1.88 cycles out of 8 warp cycles per issued instruction
+with 1.88 cycles out of 8 warp cycles per issued instruction:
 
 ![k29 warp stalls](./assets/k29_warp_stalls.png)
 
+Regarding the bank conflicts themselves, we see from the "Memory Workload
+Analysis / Shared Memory" tables that for the shared loads they are gone
+completely:
+
+|                    | ... | Bank Conflicts       |
+| ------------------ | --- | -------------------- |
+| Shared Load        | ... | **0 (-100%)**        |
+| Shared Load Matrix | ... |                      |
+| Shared Store       | ... | **33554432 (+100%)** |
+| Shared Atomic      | ... | 0 (+0%)              |
+| Other              | ... | 0 (+0%)              |
+| **Total**          | ... | 33554432 (-88.24%)   |
+
+At the same time, the Shared Store conflicts are up by 100%. Shared storeas are not
+the problem however: those are the minority (total is down by 88%) and we're no longer
+bottlenecked by the shared memory (MIO is not the top warp stall).
+
+For curiosity let's look at "L1 Wavefronts Shared Excessive" metric to see
+where the store load conflicts orignate from:
 
 ![k29 bank conflicts](./assets/k29_bank_conflicts_per_line.png)
+ 
+We see that they are now equally split between the lines loading `As` and `Bs`
+into the shared memory.
 
-- The number of Shared Memory Load requests is up by 150% to 335544320, but
-  the wavefronts number is actually down by 40%: 402653184. This attributes to
-  `Bs`'s shared load going back to using unvectorized `LDS` loads.
+The number of Shared Memory Load requests is up by 150% to 335544320, but
+the wavefronts number is actually down by 40%: 402653184. Let's again napkin-math it.
+
+
+
+
+
+
 - The ultimate limit we should hit for an optimal kernel is the FMA pipeline.
   For k29 it's at 74.42% utilization, suggesting another 25% duration cut should
   be theoretically possible.
