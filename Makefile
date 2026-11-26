@@ -1,4 +1,4 @@
-.PHONY: all build debug clean profile bench cuobjdump rsession rclone rsetup rdl
+.PHONY: all build debug clean profile bench cuobjdump rsession rclone rsetup
 
 CMAKE := cmake
 

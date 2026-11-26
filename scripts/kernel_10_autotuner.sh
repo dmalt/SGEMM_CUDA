@@ -100,5 +100,5 @@ make
 echo "($CONFIG_NUM/$N_SAMPLES): BK=$BK BM=$BM BN=$BN WM=$WM WN=$WN WN_ITER=$WN_ITER TM=$TM TN=$TN NUM_THREADS=$NUM_THREADS" 2>&1 | tee -a $OUTPUT
 # Run the benchmark and get the result
 # Kill the program after 8 seconds if it doesn't finish
-timeout -v 8 ./sgemm 10 | tee -a $OUTPUT
+timeout -v 8 ./sgemm 10 --check && timeout -v 8 ./sgemm 10 --bench | tee -a $OUTPUT
 done < <(printf '%s\n' "${CONFIGS[@]}" | shuf -n "$N_SAMPLES")

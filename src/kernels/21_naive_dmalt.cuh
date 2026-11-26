@@ -174,6 +174,7 @@ __global__ void sgemm1DBlocktilingDmalt(int M, int N, int K, float alpha,
 
 }
 
+// k27
 template <const uint BM, const uint BN, const uint BK, const uint TM, const uint TN>
 __global__ void sgemm2DBlocktilingDmalt(int M, int N, int K, float alpha,
     const float *A, const float *B, float beta, float *C) {
@@ -247,6 +248,7 @@ __global__ void sgemm2DBlocktilingDmalt(int M, int N, int K, float alpha,
 
 }
 
+// k28
 template <const uint BM, const uint BN, const uint BK, const uint TM, const uint TN>
 __global__ void sgemmVectorizeDmalt(int M, int N, int K, float alpha,
     float *A, float *B, float beta, float *C) {
@@ -327,6 +329,7 @@ __global__ void sgemmVectorizeDmalt(int M, int N, int K, float alpha,
 
 }
 
+// k29
 template <const uint BM, const uint BN, const uint BK, const uint TM, const uint TN>
 __global__ void sgemmResolveBankConflictsDmalt(int M, int N, int K, float alpha,
     float *A, float *B, float beta, float *C) {
