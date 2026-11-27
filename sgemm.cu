@@ -10,7 +10,6 @@
 #define cudaCheck(err) (cudaCheck(err, __FILE__, __LINE__))
 
 const std::string errLogFile = "matrixValidationFailure.txt";
-const int REPEAT_TIMES = 50;
 const int MAX_KERNEL = 39;
 
 // cuBLAS FLOPs ceiling is reached at 8192
