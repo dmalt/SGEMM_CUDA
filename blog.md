@@ -1099,7 +1099,6 @@ responsible are the same, except the `As` stores are now split:
 So, since the MIO throttle is still the main issue, the bank conflicts look
 like an obvious next target to tackle it.
 
-
 But first, let's napkin-math the number of shared-load wavefronts and see if we
 can arrive at the measured 671088640. I'll count per warp per K-tile and
 multiply by the number of warps and K-tiles at the end. Recall that with 256
@@ -1107,8 +1106,8 @@ threads per block, `tRow = threadIdx.x / 16` and `tCol = threadIdx.x % 16`, so
 a warp holds two values of `tRow`, each with `tCol` running from 0 to 15.
 
 First, for `regTM[iTM] = As[iDot * BM + tRow * TM + iTM];`. Each thread loads
-`TM = 8` floats per iDot with 2 `LDS.128` instructions, so it's 16 instructions
-per K-tile (BK = 8 iterations of iDot). Within one instruction, the 16 lanes of
+`TM = 8` floats per `iDot` with 2 `LDS.128` instructions, so it's 16 instructions
+per K-tile (`BK = 8` iterations of iDot). Within one instruction, the 16 lanes of
 one `tRow` all read the same `float4` (a broadcast), and the other 16 lanes
 read another `float4` 8 floats further. That's 8 different floats in 8
 different banks, so one wavefront should be enough. But we saw in k25 that a

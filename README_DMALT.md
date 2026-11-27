@@ -704,9 +704,9 @@ throughput is at 99.9%.
 
 #### Kernel 23: memory coalescing
 
-After fixing the coalescing issue on the naive kernel, we see more than a 10x improvement
-in the kernel duration: from 6s to 451 ms. The metrics that we observed earlier also
-look better now:
+After fixing the coalescing issue on the naive kernel, we see more than a 10x
+improvement in the kernel duration: from 6s to 451 ms. The metrics that we
+observed earlier also look better now:
 
 - SM Throughput: `6.05% -> 79.2%` (Bounded now by memory throughput, same `79.2%`)
 - DRAM Throughput: `0.96% -> 12.27%`
@@ -727,10 +727,11 @@ LG Throttle metric).
 For the next kernel the performance boost is significant: kernel duration drops
 from 451 ms to 323 ms. We also note from the Warp State Statistics that the
 limiting factor is not `Stall LG Throttle` anymore. Instead it's `Stall MIO
-Throttle` at 26.72 cycles (MIO is the pipeline concerning the shared memory among other things).
-Warp Cycles Per Issued Instruction also worsened to 41.36 cycles. But despite
-those metrics being worse, we see that the total number of instructions went
-down from 17.7G to 6G suggesting that we're doing less work now - almost 3-fold.
+Throttle` at 26.72 cycles (MIO is the pipeline concerning the shared memory
+among other things). Warp Cycles Per Issued Instruction also worsened to 41.36
+cycles. But despite those metrics being worse, we see that the total number of
+instructions went down from 17.7G to 6G suggesting that we're doing less work
+now - almost 3-fold.
 
 The original Boehm's write-up suggests that the performance increase for this kernel
 should be attributed to the better data locality moving the matrices from global
@@ -1050,8 +1051,10 @@ no way to reason about elements' alignment, so it just uses the basic one-float
 `LDS`. At least in theory.
 
 If the theory is correct, we should see the drop in performance not only when
-the stride is a runtime variable, but also when it's a compile-time constant, but
-not a multiple of 2 (for `LDS.64`) or 4 (for `LDS.128`). To test this I constructed another version of k25, where the stride for `As` is controlled separately:
+the stride is a runtime variable, but also when it's a compile-time constant,
+but not a multiple of 2 (for `LDS.64`) or 4 (for `LDS.128`). To test this I
+constructed another version of k25, where the stride for `As` is controlled
+separately:
 
 ```cpp
   ...
@@ -1084,7 +1087,8 @@ The durations of the three versions of this new kernel are below:
 | STRIDE       | 33  | 34  | 36  |
 | duration, ms | 430 | 338 | 329 |
 
-And the assembly code indeed matches the prediction: we see only `LDS` for `STRIDE=33`, `LDS.64` for `STRIDE=34` and `LDS.128` for `STRIDE=36`.
+And the assembly code indeed matches the prediction: we see only `LDS` for
+`STRIDE=33`, `LDS.64` for `STRIDE=34` and `LDS.128` for `STRIDE=36`.
 
 As expected, the times fall into the same performance bins as their counterparts:
 
@@ -1095,7 +1099,8 @@ As expected, the times fall into the same performance bins as their counterparts
 
 So we see that performance gains for k25 are most likely coming from a compiler
 memory optimization that occurred almost by chance and not for the reason the
-changes were introduced. In this particular case the mechanism is making the compiler see the elements are properly aligned for the vectorized loads.
+changes were introduced. In this particular case the mechanism is making the
+compiler see the elements are properly aligned for the vectorized loads.
 
 ##### K25's conclusion
 
@@ -1150,7 +1155,8 @@ warp stalling factor:
 
 ![k27 warp stalls](./assets/k27_warp_stalls.png)
 
-Interestingly, we now see bank conflicts on the shared load, which were not there before. We have 301 989 888 in total.
+Interestingly, we now see bank conflicts on the shared load, which were not
+there before. We have 301 989 888 in total.
 
 We also see the increased utilization of L1 cache again: the hit rate for k27 sits at 18.8% vs 0.77% for k26.
 
@@ -1188,7 +1194,8 @@ for (int iTN = 0; iTN < TN; ++iTN) {
 - All of the load instructions for As are now vectorized to `LDS.128`.
 - The global loads turned from `LDG` to `LDG.128`, so that change took effect.
 - Number of requests to shared memory is down by 20%, of wavefronts - by 9%.
-- Bank conflicts for shared load are down by 11%, but the new 16777216 shared store conflicts were introduced.
+- Bank conflicts for shared load are down by 11%, but the new 16777216 shared
+  store conflicts were introduced.
 - Stall MIO throttle is down by 6% to 3.39.
 
 Looks like the main effect of this change is removing the rest of unvectorized
@@ -1214,7 +1221,9 @@ obvious thing for improvement.
 
 
 > [!NOTE]
-> "Stall Not Selected" means that the warp was ready, but another warp was selected instead. It's not really a stall. [Nvidia docs on this](https://docs.nvidia.com/nsight-compute/ProfilingGuide/index.html#warp-stall-reasons)
+> "Stall Not Selected" means that the warp was ready, but another warp was
+> selected instead. It's not really a stall. [Nvidia docs on
+> this](https://docs.nvidia.com/nsight-compute/ProfilingGuide/index.html#warp-stall-reasons)
 
 ## Notes
 
