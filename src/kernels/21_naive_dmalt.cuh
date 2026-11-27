@@ -264,9 +264,6 @@ __global__ void sgemmVectorizeDmalt(int M, int N, int K, float alpha,
 
   const uint k = BN / TN;
 
-  const uint strideA = numThreadsBlocktile / BK;
-  const uint strideB = numThreadsBlocktile / BN;
-
   const uint bkRow = blockIdx.y;
   const uint bkCol = blockIdx.x;
 
@@ -314,7 +311,6 @@ __global__ void sgemmVectorizeDmalt(int M, int N, int K, float alpha,
 
     __syncthreads();
   }
-  uint index;
   for (int iTM = 0; iTM < TM; iTM += 1) {
     for (int iTN = 0; iTN < TN; iTN += 4) {
       float4 tmp = reinterpret_cast<float4 *>(
@@ -344,9 +340,6 @@ __global__ void sgemmResolveBankConflictsDmalt(int M, int N, int K, float alpha,
   int numThreadsBlocktile = totalResultsBlocktile / (TM * TN);
 
   const uint k = BN / TN;
-
-  const uint strideA = numThreadsBlocktile / BK;
-  const uint strideB = numThreadsBlocktile / BN;
 
   const uint bkRow = blockIdx.y;
   const uint bkCol = blockIdx.x;
@@ -398,7 +391,6 @@ __global__ void sgemmResolveBankConflictsDmalt(int M, int N, int K, float alpha,
 
     __syncthreads();
   }
-  uint index;
   for (int iTM = 0; iTM < TM; iTM += 1) {
     for (int iTN = 0; iTN < TN; iTN += 4) {
       float4 tmp = reinterpret_cast<float4 *>(

@@ -142,7 +142,7 @@ void benchmark(int m, int n, int k, float alpha, float beta, MatricesDevice &md,
 
   long flops = 2 * m * n * k;
   printf("Average elapsed time: (%7.6f) s, performance: (%7.1f) GFLOPS. size: "
-         "(%ld).\n",
+         "(%d).\n",
          elapsed_time / repeat_times,
          (repeat_times * flops * 1e-9) / elapsed_time, m);
   fflush(stdout);
